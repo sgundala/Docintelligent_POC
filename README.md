@@ -1,4 +1,4 @@
-# Take-Home: Document Intake → Completeness → Intelligent Fill (POC)
+# Take-Home: Document Intake → Review → Intelligent Fill → Completeness (POC)
 
 ## Goal
 
