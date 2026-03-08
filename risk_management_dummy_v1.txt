@@ -1,0 +1,42 @@
+RISK MANAGEMENT REPORT
+Document Title: Risk Management Report - NeuroPulse Wearable Monitor
+Document Number: RMR-NP-001
+Version: 1.0
+Date: 2026-03-08
+Author: Priya Raman
+Reviewer: John Mercer
+Device Name: NeuroPulse Wearable Monitor
+Manufacturer: Accelidea Med Systems
+Risk Management Standard: ISO 14971:2019
+
+1. SCOPE
+This report summarizes risk management activities for NeuroPulse Wearable Monitor intended for remote neurological signal monitoring.
+
+2. HAZARD IDENTIFICATION
+Hazard Identification: Skin irritation from prolonged patch contact; electrical over-stimulation due to firmware defect; data loss during Bluetooth disconnection.
+
+3. RISK ESTIMATION
+Risk Estimation: Skin irritation probability medium / severity low; over-stimulation probability low / severity high; data loss probability medium / severity medium.
+
+4. RISK EVALUATION
+Risk Evaluation: Over-stimulation risk is not acceptable without controls. Skin irritation and data loss require mitigations and post-market follow-up.
+
+5. RISK CONTROL MEASURES
+Risk Control Measures: Current limit firmware guardrails, automatic therapy shutoff, hypoallergenic adhesive selection, connectivity retry logic, and alerting for sync failures.
+
+6. RESIDUAL RISK ASSESSMENT
+Residual Risk Assessment: After controls, all identified risks are reduced to acceptable levels with documented rationale.
+
+7. BENEFIT RISK RATIO
+Benefit Risk Ratio: Clinical and operational benefits outweigh residual risks for intended use population.
+
+8. BIOCOMPATIBILITY ASSESSMENT
+Biocompatibility Standard: ISO 10993-1, ISO 10993-5, ISO 10993-10
+Biological Endpoints Evaluated: Cytotoxicity, Sensitization, Irritation / Intracutaneous Reactivity
+Cytotoxicity Result: Cytotoxicity ISO 10993-5: Pass (no cytotoxic response observed)
+Sensitization Result: Sensitization ISO 10993-10: Pass (no sensitization response observed)
+Irritation Result: Irritation/Intracutaneous Reactivity ISO 10993-10: Pass (no irritation response observed)
+Biocompatibility Assessment: All required biological endpoints passed; no additional biocompatibility risk controls required.
+
+9. CONCLUSION
+The device risk profile is acceptable when operated within labeling constraints and implemented controls.

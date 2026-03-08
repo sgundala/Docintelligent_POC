@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+node_modules/
+frontend/build/
+uploads/
+outputs/
+logs/
+ontology_db.json
+*.egg-info/
+.DS_Store
