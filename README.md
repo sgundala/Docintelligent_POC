@@ -1,8 +1,8 @@
-# MedDoc Intake POC
+# MedDoc Intake POC (AI-Based)
 
 Document Intake -> Review -> Intelligent Fill -> Completeness
 
-> Submission note: this repository update is an **additional implementation pass** for the take-home, and is **not intended to replace prior baseline work/history**.
+> Submission note: this repository update is an **AI-based additional implementation pass** for the take-home, and is **not intended to replace prior baseline work/history**.
 
 A Docker-first proof of concept for medical/regulatory document workflows:
 - Upload one or more PDF/DOCX/TXT files
