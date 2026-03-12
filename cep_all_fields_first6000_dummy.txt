@@ -1,0 +1,46 @@
+CLINICAL EVALUATION PROTOCOL
+Document Title: Clinical Evaluation Protocol - VascuStent Pro
+Document Number: CEP-VSP-2026-001
+Version: 2.1
+Date: 2026-03-09
+Author: Dr. Meera Nair
+Reviewer: Head of Clinical Affairs
+
+DEVICE INFORMATION
+Device Name: VascuStent Pro
+Model: VSP-4.2
+Manufacturer: SivaCompany Medical Devices Pvt Ltd
+Device Classification: Class III (EU MDR Rule 8)
+Predicate Device: VascuStent Gen2
+Equivalence Device: VascuStent Legacy-EU
+
+REGULATORY FRAMEWORK
+Regulatory Framework: MDR 2017/745 (EU)
+Notified Body: BSI Netherlands (NB 2797)
+Approval Date: 2026-02-15
+Post-Market Surveillance Ref: PMS-VSP-2026-Q1
+
+INTENDED USE
+Intended Purpose: VascuStent Pro is intended for restoration of luminal patency in stenotic peripheral arteries in adult patients.
+Evaluation Scope: Full clinical evaluation under MDR Annex XIV and MEDDEV 2.7/1 rev 4 including safety, performance, and benefit-risk profile.
+
+LITERATURE AND EVIDENCE METHODS
+Literature Search Strategy: Systematic search of PubMed, Embase, and Cochrane from 2014-2026 using terms including peripheral stent, restenosis, thrombosis, and vascular intervention outcomes.
+Inclusion Criteria: Prospective studies, RCTs, and high-quality registries with >= 50 subjects and 6+ months follow-up.
+Exclusion Criteria: Case reports, animal-only studies, studies with major protocol deviations, and cohorts under 10 subjects.
+Clinical Data Sources: Published literature, manufacturer PMCF, complaint trending, vigilance reporting, and registry data.
+
+BIOCOMPATIBILITY
+Biocompatibility Standard: ISO 10993-1, ISO 10993-5, ISO 10993-10
+Biological Endpoints Evaluated: Cytotoxicity, Sensitization, Irritation / Intracutaneous Reactivity
+Cytotoxicity Result: Cytotoxicity ISO 10993-5: Pass (no cytotoxic response observed in L-929 assay).
+Sensitization Result: Sensitization ISO 10993-10: Pass (no sensitization response observed).
+Irritation Result: Irritation/Intracutaneous Reactivity ISO 10993-10: Pass (no irritation response observed).
+Biocompatibility Assessment: All required biological endpoints passed and support clinical use for intended patient population.
+
+BENEFIT-RISK AND CONCLUSION
+Benefit-Risk Assessment: Clinical benefits in vessel patency and reduced reintervention outweigh residual risks when used per IFU.
+Conclusions: Available evidence demonstrates acceptable safety and performance of VascuStent Pro for intended use.
+
+TRACEABILITY NOTE
+This protocol is prepared for regulatory submission and aligns with internal quality SOP-QMS-CLIN-014.

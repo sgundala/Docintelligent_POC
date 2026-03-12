@@ -1,0 +1,3696 @@
+# PROJECT FULL CODE EXPORT
+Generated: 2026-03-10 14:09:12 UTC
+
+============================================================
+README
+============================================================
+FILE: README.md
+------------------------------------------------------------
+# MedDoc Intake POC (AI-Based)
+
+Document Intake -> Review -> Intelligent Fill -> Completeness
+
+> Submission note: this repository update is an **AI-based additional implementation pass** for the take-home, and is **not intended to replace prior baseline work/history**.
+
+A Docker-first proof of concept for medical/regulatory document workflows:
+- Upload one or more PDF/DOCX/TXT files
+- Detect document type
+- Extract structured fields with evidence/provenance
+- Review/edit fields
+- Accept/edit/reject suggestions
+- Compute completeness (document + package + output-template matrix)
+- Generate draft outputs (TXT/DOCX)
+- Maintain audit trail and evolving ontology
+
+## Contents
+- [1. Quick Start](#1-quick-start)
+- [2. What This Project Covers](#2-what-this-project-covers)
+- [3. Architecture](#3-architecture)
+- [4. Data Model and Ontology](#4-data-model-and-ontology)
+- [5. Extraction Pipeline (Section + RAG)](#5-extraction-pipeline-section--rag)
+- [6. Completeness Model](#6-completeness-model)
+- [7. API Endpoints](#7-api-endpoints)
+- [8. UI Walkthrough](#8-ui-walkthrough)
+- [9. Running End-to-End Validation](#9-running-end-to-end-validation)
+- [10. AI vs Deterministic Logic](#10-ai-vs-deterministic-logic)
+- [11. Tradeoffs and Assumptions](#11-tradeoffs-and-assumptions)
+- [12. Scaling Bottlenecks](#12-scaling-bottlenecks)
+- [13. Troubleshooting](#13-troubleshooting)
+- [14. Project Structure](#14-project-structure)
+- [15. GitHub Push Steps](#15-github-push-steps)
+
+## 1. Quick Start
+
+### Prerequisites
+- Docker Desktop / Docker Engine running
+- Ports `3000` and `8000` free
+- Optional: Groq API key for better extraction quality
+
+### Start
+```bash
+cd /Users/sivadatum/Documents/Playground/Accelidea_Siva
+cp .env.example .env
+# edit .env and set GROQ_API_KEY=... (optional but recommended)
+docker compose up --build -d
+```
+
+### Open
+- UI: [http://localhost:3000](http://localhost:3000)
+- Health: [http://localhost:8000/api/health](http://localhost:8000/api/health)
+
+### Stop
+```bash
+docker compose down
+```
+
+## 2. What This Project Covers
+
+### In scope
+- Dockerized full-stack app (React + FastAPI)
+- Ingestion with deduplication (SHA-256)
+- Extraction with Groq + fallback heuristics
+- Section-aware extraction and section-level coverage
+- Suggestion workflow: accept / edit / reject
+- Document/package/output-template completeness
+- Output generation and download (`.txt`, `.docx`)
+- Audit log and schema/ontology registry
+
+### Out of scope
+- Authentication/authorization
+- Load/performance testing
+- Production-grade OCR for image-only scans
+- Formal graph DB (uses JSON graph store)
+
+## 3. Architecture
+
+```text
+Browser (React)
+  -> Upload, field review, suggestions, generation, traceability
+  -> Calls REST API
+
+FastAPI Backend
+  -> Ingestion + dedup
+  -> Type detection
+  -> Section/chunking + retrieval + extraction
+  -> Suggestions + completeness + output generation
+  -> Audit logging
+  -> JSON ontology store
+
+Storage
+  -> ontology_data/ontology_db.json
+  -> logs/audit.jsonl
+  -> uploads/, outputs/
+```
+
+Groq is used when available. If Groq errors or rate-limits, the backend fails open to heuristic extraction (upload still succeeds).
+
+## 4. Data Model and Ontology
+
+Ontology is a self-evolving JSON graph in `ontology_data/ontology_db.json`.
+
+### Core entities
+- `documents`: uploaded docs and summary metadata
+- `elements`: extracted fields with provenance/evidence
+- `templates`: ingested sample/output templates
+- `relationships`:
+  - `has_field` (document -> element)
+  - `template_defines_field` (template -> field name)
+  - `field_related` (element -> element semantic relation)
+- `schema_registry`: observed/evolving field catalog
+
+### Provenance tracked per field
+- `source` (e.g. `groq_llm`, `groq_rag`, `heuristic_regex`, `heuristic_rag`, `suggestion_accept`)
+- `confidence`
+- `evidence`
+- `section` (where it came from)
+
+## 5. Extraction Pipeline (Section + RAG)
+
+Implemented in modular backend package `backend/meddoc`:
+- `schemas.py`: doc schemas + section field hints
+- `chunking.py`: heading detection + section extraction + chunking
+- `rag.py`: in-memory lexical retrieval scoring
+- `pipeline.py`: section-aware extraction orchestration
+
+### Flow
+1. Parse document text into sections
+2. Create chunks per section
+3. Run broad extraction (Groq + heuristic fallback)
+4. For missing fields, retrieve top relevant chunks and run targeted extraction
+5. Build section summary:
+   - expected required coverage
+   - actual extracted fields by section
+   - misaligned required fields
+
+### Biocompatibility pack
+Added fields include:
+- `biocompatibility_standard`
+- `biological_endpoints_evaluated`
+- `biocompatibility_assessment`
+- `cytotoxicity_result`
+- `sensitization_result`
+- `irritation_result`
+
+## 6. Completeness Model
+
+### A. Document completeness
+For selected document type:
+- `required_present / required_total * 100`
+
+### B. Package completeness
+- Output doc type coverage across uploaded package
+
+### C. Output-template completeness matrix
+Per template row:
+- matched doc
+- required fields present/total
+- missing field count/list
+- `completeness_pct`
+- `matched_doc_filename`, `matched_doc_uploaded_at`
+
+UI supports `Show only incomplete rows` in package card.
+
+## 7. API Endpoints
+
+### Health
+- `GET /api/health`
+
+### Documents
+- `POST /api/documents/upload`
+- `GET /api/documents`
+- `GET /api/documents/{id}`
+- `PATCH /api/documents/{id}/fields`
+- `POST /api/documents/{id}/reprocess`
+
+### Suggestions
+- `POST /api/documents/{id}/suggestions/{sid}`
+
+### Output
+- `POST /api/documents/{id}/generate`
+- `GET /api/documents/{id}/download`
+- `POST /api/documents/{id}/generate-docx`
+- `GET /api/documents/{id}/download-docx`
+
+### Audit / Schema / Templates
+- `GET /api/audit`
+- `GET /api/schema`
+- `GET /api/package/completeness`
+- `GET /api/templates`
+- `POST /api/templates/ingest`
+
+### Demo
+- `POST /api/demo/load-sample`
+
+## 8. UI Walkthrough
+
+### Left sidebar
+- Upload zone
+- Package completeness card + output-template rows
+- Document list (newest first)
+- Audit panel
+
+### Main document view tabs
+- `Fields`: extracted values + confidence + source + section
+- `Sections`: section coverage and extracted-here lists
+- `Suggestions`: pending + resolved (accept/edit/reject)
+- `Missing`: missing required fields
+- `Templates`: template-derived field coverage
+- `Traceability`: hash, status, provenance
+
+Behavior improvements:
+- Auto-selects first/newest document
+- New upload auto-focuses on newest document
+
+## 9. Running End-to-End Validation
+
+### Manual flow
+1. Start stack: `docker compose up --build -d`
+2. Check health (`/api/health`)
+3. Upload a document in UI
+4. Open document -> inspect fields/suggestions/sections/missing
+5. Action suggestions (accept/edit/reject)
+6. Edit at least one field
+7. Generate output and download
+8. Verify audit events
+9. Re-upload same file to verify dedup
+
+### Quick API smoke examples
+```bash
+curl -s http://localhost:8000/api/health
+curl -s http://localhost:8000/api/documents
+curl -s http://localhost:8000/api/package/completeness
+curl -s http://localhost:8000/api/schema
+```
+
+## 10. AI vs Deterministic Logic
+
+### AI-driven
+- Groq extraction for structured field values
+- Groq-based missing field suggestion generation
+- RAG-targeted extraction for missing fields from relevant chunks
+
+### Deterministic
+- SHA-256 dedup
+- regex/heuristic extraction fallback
+- completeness scoring arithmetic
+- output assembly
+- audit logging
+- ontology append/update semantics
+
+## 11. Tradeoffs and Assumptions
+
+### Tradeoffs
+- JSON file store is simple but not high-scale
+- In-memory retrieval is lightweight but not semantic vector retrieval
+- Template mining from raw PDFs can be noisy without stronger normalization
+- No auth (POC)
+
+### Assumptions
+- English-language docs
+- Extractable text is available (not image-only scan)
+- One file primarily maps to one doc type
+
+## 12. Scaling Bottlenecks
+
+- JSON ontology file growth (I/O contention)
+- Groq rate limits / cost
+- No async job queue for heavy extraction
+- In-memory retrieval not cross-document semantic search
+- PDF table extraction still heuristic for complex layouts
+
+Suggested production path:
+- PostgreSQL + vector DB (pgvector/Qdrant)
+- Worker queue (Celery/RQ)
+- robust OCR/table parsing layer
+- auth + multi-tenant scoping
+
+## 13. Troubleshooting
+
+### Upload seems static / UI unchanged
+- Hard refresh `Cmd+Shift+R`
+- Ensure newest doc appears in left list
+- Check dedup response (same bytes -> no new doc)
+
+### Upload fails with Groq rate limit
+- Backend now falls back automatically
+- Check `logs/audit.jsonl` for `groq_request_error`
+
+### Only package card visible
+- Click a document in left list
+- Main tabs appear when a doc is selected
+
+### Containers healthy?
+```bash
+docker compose ps
+docker compose logs backend --tail=120
+docker compose logs frontend --tail=120
+```
+
+## 14. Project Structure
+
+```text
+Accelidea_Siva/
+├── backend/
+│   ├── app.py
+│   ├── requirements.txt
+│   └── meddoc/
+│       ├── __init__.py
+│       ├── routes/
+│       │   ├── system.py
+│       │   └── meta.py
+│       ├── storage.py
+│       ├── models.py
+│       ├── schemas.py
+│       ├── chunking.py
+│       ├── rag.py
+│       └── pipeline.py
+├── frontend/
+│   └── src/
+│       ├── App.js
+│       ├── App.css
+│       └── ...
+├── sample_docs/
+├── uploads/
+├── outputs/
+├── logs/
+├── Dockerfile.backend
+├── Dockerfile.frontend
+├── docker-compose.yml
+└── README.md
+```
+
+## 15. GitHub Push Steps
+
+Run from project root:
+
+```bash
+cd /Users/sivadatum/Documents/Playground/Accelidea_Siva
+git status
+git add .
+git commit -m "Finalize MedDoc intake POC: modular extraction, completeness matrix, UI fixes, README"
+```
+
+If remote is not set:
+```bash
+git remote add origin <YOUR_GITHUB_REPO_URL>
+```
+
+Push:
+```bash
+git branch -M main
+git push -u origin main
+```
+
+If you prefer a feature branch:
+```bash
+git checkout -b codex/readme-final
+git push -u origin codex/readme-final
+```
+
+
+============================================================
+FILE: docker-compose.yml
+============================================================
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+    volumes:
+      - doc_uploads:/app/uploads
+      - doc_outputs:/app/outputs
+      - doc_logs:/app/logs
+      - ontology_db:/app/ontology_data
+      - ./sample_docs:/app/sample_docs:ro
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  doc_uploads:
+  doc_outputs:
+  doc_logs:
+  ontology_db:
+
+
+============================================================
+FILE: Dockerfile.backend
+============================================================
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libpq-dev && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY backend/ ./
+
+# Create data directories
+RUN mkdir -p /app/uploads /app/outputs /app/logs
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+
+
+============================================================
+FILE: Dockerfile.frontend
+============================================================
+# Build stage
+FROM node:18-alpine AS build
+
+WORKDIR /app
+
+COPY frontend/package.json ./
+RUN npm install
+
+COPY frontend/ ./
+RUN npm run build
+
+# Serve stage
+FROM nginx:alpine
+
+COPY --from=build /app/build /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+
+
+============================================================
+FILE: nginx.conf
+============================================================
+server {
+    listen 80;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # React SPA routing
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Proxy API calls to backend
+    location /api/ {
+        proxy_pass http://backend:8000/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 120s;
+        client_max_body_size 50M;
+    }
+}
+
+
+============================================================
+FILE: .env.example
+============================================================
+# Copy this to .env and fill in your key
+# Get a free key at https://console.groq.com
+
+GROQ_API_KEY=gsk_your_key_here
+
+
+============================================================
+FILE: backend/requirements.txt
+============================================================
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+pdfplumber==0.11.0
+python-docx==1.1.2
+groq==0.9.0
+httpx==0.27.2
+pydantic==2.7.1
+
+
+============================================================
+FILE: backend/app.py
+============================================================
+"""
+MedDoc Intake POC — Backend (FastAPI + Groq)
+============================================
+Architecture decisions:
+- Ontology stored as a self-evolving JSON graph (nodes + edges).
+  New uploads ADD new node types/fields; nothing is deleted or rewritten.
+- SHA-256 content hash used for dedup: re-uploading same file is a no-op.
+- Groq (llama-3.3-70b-versatile) drives extraction + suggestions.
+  Falls back to heuristic regex if GROQ_API_KEY is missing.
+- All key events are appended to logs/audit.jsonl (one JSON per line).
+"""
+
+import os, json, uuid, hashlib, datetime, re, textwrap
+from pathlib import Path
+from typing import Optional, Dict, List, Set
+
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from meddoc.schemas import (
+    DOC_TYPES as SCHEMA_DOC_TYPES,
+    SECTION_KEYWORDS as SCHEMA_SECTION_KEYWORDS,
+    SECTION_FIELD_HINTS as SCHEMA_SECTION_FIELD_HINTS,
+)
+from meddoc.pipeline import section_aware_extract_rag
+from meddoc.routes.system import router as system_router
+from meddoc.routes.meta import router as meta_router
+from meddoc.storage import (
+    UPLOADS, OUTPUTS, SAMPLE_DOCS, OUTPUTDOCS,
+    AUDIT, load_db, save_db, audit,
+)
+from meddoc.models import (
+    FieldEdit, SuggestionAction, ReprocessRequest, TemplateIngestRequest,
+)
+
+try:
+    import pdfplumber
+    PDF_OK = True
+except ImportError:
+    PDF_OK = False
+
+try:
+    from docx import Document as DocxDoc
+    DOCX_OK = True
+except ImportError:
+    DOCX_OK = False
+
+try:
+    from groq import Groq
+    GROQ_OK = True
+except ImportError:
+    GROQ_OK = False
+
+# ── document type schemas ─────────────────────────────────────────────────────
+DOC_TYPES = {
+    "clinical_evaluation_protocol": {
+        "label": "Clinical Evaluation Protocol",
+        "required_fields": [
+            "document_title","document_number","version","date",
+            "device_name","device_model","intended_purpose",
+            "manufacturer_name","regulatory_framework",
+            "evaluation_scope","literature_search_strategy",
+            "inclusion_criteria","exclusion_criteria",
+            "clinical_data_sources","equivalence_device",
+            "benefit_risk_assessment","conclusions","author","reviewer"
+        ],
+        "optional_fields": [
+            "device_classification","predicate_device",
+            "post_market_surveillance_ref","notified_body","approval_date"
+        ]
+    },
+    "risk_management_report": {
+        "label": "Risk Management Report",
+        "required_fields": [
+            "document_title","document_number","version","date",
+            "device_name","manufacturer_name","risk_management_standard",
+            "hazard_identification","risk_estimation","risk_evaluation",
+            "risk_control_measures","residual_risk_assessment",
+            "benefit_risk_ratio","author","reviewer"
+        ],
+        "optional_fields": ["fmea_reference","fault_tree_ref"]
+    },
+    "test_protocol": {
+        "label": "Test Protocol / Study Design",
+        "required_fields": [
+            "document_title","document_number","version","date",
+            "test_objective","device_name","test_standard",
+            "sample_size","acceptance_criteria","test_environment",
+            "test_procedure","pass_fail_criteria","author","reviewer"
+        ],
+        "optional_fields": ["statistical_method","deviation_procedure"]
+    },
+    "design_history_file": {
+        "label": "Design History File Entry",
+        "required_fields": [
+            "document_title","document_number","version","date",
+            "device_name","design_input","design_output",
+            "design_verification","design_validation",
+            "design_review_record","author"
+        ],
+        "optional_fields": ["change_control_ref","risk_ref"]
+    },
+    "unknown": {
+        "label": "Unknown Document",
+        "required_fields": ["document_title","document_number","version","date"],
+        "optional_fields": []
+    }
+}
+DOC_TYPES = SCHEMA_DOC_TYPES
+
+SECTION_KEYWORDS = {
+    "document_control": ["document", "title", "version", "revision", "author", "reviewer", "approval", "metadata", "header"],
+    "device_information": ["device", "product", "manufacturer", "model", "description", "classification"],
+    "regulatory_framework": ["regulatory", "framework", "standard", "compliance", "iso", "mdr", "fda"],
+    "evaluation_scope": ["scope", "objective", "purpose", "intended", "evaluation"],
+    "evidence_methodology": ["literature", "search", "method", "criteria", "clinical data", "sources", "dataset"],
+    "risk_assessment": ["risk", "hazard", "fmea", "control", "residual", "benefit"],
+    "conclusion": ["conclusion", "summary", "decision", "recommendation"],
+    "other": []
+}
+SECTION_KEYWORDS = SCHEMA_SECTION_KEYWORDS
+
+SECTION_FIELD_HINTS = {
+    "document_control": {"document_title", "document_number", "version", "date", "author", "reviewer"},
+    "device_information": {"device_name", "device_model", "manufacturer_name", "device_classification", "predicate_device"},
+    "regulatory_framework": {"regulatory_framework", "risk_management_standard", "notified_body", "approval_date"},
+    "evaluation_scope": {"intended_purpose", "evaluation_scope", "test_objective", "test_environment"},
+    "evidence_methodology": {
+        "literature_search_strategy", "inclusion_criteria", "exclusion_criteria", "clinical_data_sources",
+        "sample_size", "test_standard", "acceptance_criteria", "test_procedure", "pass_fail_criteria"
+    },
+    "risk_assessment": {
+        "hazard_identification", "risk_estimation", "risk_evaluation", "risk_control_measures",
+        "residual_risk_assessment", "benefit_risk_assessment", "benefit_risk_ratio"
+    },
+    "conclusion": {"conclusions"},
+}
+SECTION_FIELD_HINTS = SCHEMA_SECTION_FIELD_HINTS
+
+def normalize_heading(line: str) -> str:
+    out = re.sub(r"^\s*\d+(?:\.\d+)*[\)\.]?\s*", "", line.strip())
+    return out.strip(":- ").strip()
+
+def looks_like_heading(line: str) -> bool:
+    s = line.strip()
+    if len(s) < 4 or len(s) > 120:
+        return False
+    if ":" in s and not s.endswith(":"):
+        return False
+    if re.match(r"^\d+(?:\.\d+)*[\)\.]?\s+[A-Z][A-Z0-9 \-_/&]{2,}$", s):
+        return True
+    if re.match(r"^[A-Z][A-Z0-9 \-_/&]{4,}$", s):
+        return True
+    if re.match(r"^[A-Z][A-Za-z0-9 \-_/&]{4,}:$", s):
+        return True
+    return False
+
+def classify_section_key(heading: str) -> str:
+    h = heading.lower()
+    best = ("other", 0)
+    for key, tokens in SECTION_KEYWORDS.items():
+        score = sum(1 for t in tokens if t in h)
+        if score > best[1]:
+            best = (key, score)
+    return best[0]
+
+def extract_sections(text: str) -> List[Dict[str, str]]:
+    lines = text.splitlines()
+    sections: List[Dict[str, str]] = []
+    current = {"heading": "Preamble", "section_key": "document_control", "lines": []}
+    for raw in lines:
+        line = raw.rstrip("\n")
+        if looks_like_heading(line):
+            if current["lines"]:
+                body = "\n".join(current["lines"]).strip()
+                if body:
+                    sections.append({
+                        "heading": current["heading"],
+                        "section_key": current["section_key"],
+                        "text": body
+                    })
+            heading = normalize_heading(line)
+            current = {"heading": heading or "Untitled", "section_key": classify_section_key(heading), "lines": []}
+            continue
+        current["lines"].append(line)
+    if current["lines"]:
+        body = "\n".join(current["lines"]).strip()
+        if body:
+            sections.append({
+                "heading": current["heading"],
+                "section_key": current["section_key"],
+                "text": body
+            })
+    return sections[:40]
+
+# ── Groq client ───────────────────────────────────────────────────────────────
+def get_groq():
+    key = os.environ.get("GROQ_API_KEY","")
+    if GROQ_OK and key:
+        return Groq(api_key=key)
+    return None
+
+def groq_complete(prompt: str, system: str = "", max_tokens: int = 2048) -> str:
+    client = get_groq()
+    if not client:
+        return ""
+    msgs = []
+    if system:
+        msgs.append({"role":"system","content":system})
+    msgs.append({"role":"user","content":prompt})
+    try:
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=msgs, max_tokens=max_tokens, temperature=0.1
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        # Fail open to heuristic path (e.g., Groq rate limit / transient error).
+        audit("groq_request_error", {"error": str(e)[:400]})
+        return ""
+
+# ── text extraction ───────────────────────────────────────────────────────────
+def extract_text(path: Path, mime: str) -> str:
+    if mime == "application/pdf" and PDF_OK:
+        with pdfplumber.open(path) as pdf:
+            return "\n".join(p.extract_text() or "" for p in pdf.pages)
+    if "wordprocessingml" in mime and DOCX_OK:
+        doc = DocxDoc(str(path))
+        return "\n".join(p.text for p in doc.paragraphs)
+    try:
+        return path.read_text(errors="replace")
+    except:
+        return ""
+
+def normalize_field_name(label: str) -> str:
+    label = label.strip().lower()
+    label = re.sub(r"\(.*?\)", " ", label)
+    label = re.sub(r"[^a-z0-9]+", "_", label)
+    label = re.sub(r"_+", "_", label).strip("_")
+    if not label or len(label) < 3:
+        return ""
+    return label
+
+def extract_template_fields(text: str) -> List[str]:
+    candidates: Set[str] = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or len(line) > 160:
+            continue
+
+        # Label-like forms commonly used in templates.
+        m_colon = re.match(r"^([A-Za-z][A-Za-z0-9 \/\-\(\)]{2,90})\s*:\s*$", line)
+        m_blank = re.match(r"^([A-Za-z][A-Za-z0-9 \/\-\(\)]{2,90})\s*[_\.]{3,}\s*$", line)
+        m_field = re.match(r"^(?:field|item)\s*[:\-]\s*([A-Za-z][A-Za-z0-9 \/\-\(\)]{2,90})$", line, re.IGNORECASE)
+
+        label = None
+        if m_colon:
+            label = m_colon.group(1)
+        elif m_blank:
+            label = m_blank.group(1)
+        elif m_field:
+            label = m_field.group(1)
+
+        if label:
+            key = normalize_field_name(label)
+            if key:
+                candidates.add(key)
+
+    # Also capture inline key:value style labels, usually metadata headers.
+    for m in re.finditer(r"([A-Za-z][A-Za-z0-9 \/\-\(\)]{2,40})\s*:\s*[^\n]{0,80}", text):
+        key = normalize_field_name(m.group(1))
+        if key:
+            candidates.add(key)
+
+    return sorted(candidates)
+
+def upsert_schema_field_from_template(db: dict, field_name: str, doc_type: str, template_id: str):
+    reg = db["schema_registry"].setdefault(
+        field_name,
+        {"type":"string","docs_seen_in":[],"required_in":[],"template_seen_in":[],"template_doc_types":[]}
+    )
+    reg.setdefault("docs_seen_in", [])
+    reg.setdefault("required_in", [])
+    reg.setdefault("template_seen_in", [])
+    reg.setdefault("template_doc_types", [])
+    if template_id not in reg["template_seen_in"]:
+        reg["template_seen_in"].append(template_id)
+    if doc_type != "unknown" and doc_type not in reg["template_doc_types"]:
+        reg["template_doc_types"].append(doc_type)
+
+def template_fields_for_doc_type(db: dict, doc_type: str) -> List[str]:
+    fields = []
+    for field_name, reg in db.get("schema_registry", {}).items():
+        if not isinstance(reg, dict):
+            continue
+        # Prefer explicit template_doc_types; keep legacy compatibility with prior data
+        tdocs = reg.get("template_doc_types", [])
+        legacy_required = reg.get("required_in", [])
+        has_template_refs = bool(reg.get("template_seen_in"))
+        if doc_type in tdocs or (has_template_refs and doc_type in legacy_required):
+            fields.append(field_name)
+    return sorted(set(fields))
+
+def effective_schema(db: dict, doc_type: str) -> Dict[str, List[str] | str]:
+    base = DOC_TYPES.get(doc_type, DOC_TYPES["unknown"])
+    req = list(base["required_fields"])
+    opt = list(base["optional_fields"])
+    tmpl = [f for f in template_fields_for_doc_type(db, doc_type) if f not in req and f not in opt]
+    return {
+        "label": base["label"],
+        "required_fields": req,
+        "optional_fields": opt + tmpl,
+        "template_fields": tmpl
+    }
+
+def ingest_templates_into_ontology(filenames: Optional[List[str]] = None) -> dict:
+    db = load_db()
+    allowed = {".pdf": "application/pdf", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".txt": "text/plain"}
+    files = []
+    sources = [SAMPLE_DOCS]
+    if OUTPUTDOCS.exists():
+        sources.append(OUTPUTDOCS)
+    for src in sources:
+        for p in sorted(src.iterdir()):
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in allowed:
+                continue
+            if filenames and p.name not in filenames:
+                continue
+            files.append(p)
+
+    ingested = []
+    deduplicated = []
+    skipped = []
+    for p in files:
+        raw = p.read_bytes()
+        sha256 = hashlib.sha256(raw).hexdigest()
+        existing = None
+        for tid, node in db["templates"].items():
+            if node.get("sha256") == sha256:
+                existing = (tid, node)
+                break
+        if existing:
+            deduplicated.append({"filename": p.name, "template_id": existing[0]})
+            continue
+
+        mime = allowed[p.suffix.lower()]
+        text = extract_text(p, mime)
+        if not text.strip():
+            skipped.append({"filename": p.name, "reason": "no_text_extracted"})
+            continue
+        doc_type = detect_doc_type(text, p.name)
+        fields = extract_template_fields(text)
+        template_id = str(uuid.uuid4())
+        node = {
+            "template_id": template_id,
+            "filename": p.name,
+            "sha256": sha256,
+            "doc_type": doc_type,
+            "text_length": len(text),
+            "field_count": len(fields),
+            "fields": fields,
+            "ingested_at": datetime.datetime.utcnow().isoformat()
+        }
+        db["templates"][template_id] = node
+        for f in fields:
+            upsert_schema_field_from_template(db, f, doc_type, template_id)
+            db["relationships"].append({"from": template_id, "to": f, "type": "template_defines_field"})
+        ingested.append({"filename": p.name, "template_id": template_id, "doc_type": doc_type, "field_count": len(fields)})
+        audit("template_ingested", {"template_id": template_id, "filename": p.name, "doc_type": doc_type, "field_count": len(fields)})
+
+    save_db(db)
+    return {
+        "processed_count": len(files),
+        "ingested_count": len(ingested),
+        "deduplicated_count": len(deduplicated),
+        "skipped_count": len(skipped),
+        "ingested": ingested,
+        "deduplicated": deduplicated,
+        "skipped": skipped
+    }
+
+def required_output_doc_types(db: dict) -> List[str]:
+    # Prefer template-derived required output set when available.
+    templ_types = sorted({
+        t.get("doc_type") for t in db.get("templates", {}).values()
+        if t.get("doc_type") and t.get("doc_type") != "unknown"
+    })
+    if templ_types:
+        return templ_types
+    return [t for t in DOC_TYPES.keys() if t != "unknown"]
+
+def package_completeness_summary(db: dict) -> dict:
+    docs = list(db["documents"].values())
+    avg_field_completeness = round(sum(d["completeness"]["completeness_pct"] for d in docs)/len(docs),1) if docs else 0.0
+    required_types = required_output_doc_types(db)
+    present_types = sorted({d.get("doc_type") for d in docs if d.get("doc_type") in required_types})
+    missing_types = [t for t in required_types if t not in present_types]
+    output_doc_coverage_pct = round((len(present_types)/len(required_types))*100,1) if required_types else 100.0
+
+    # Per-output-template completeness matrix.
+    doc_elements: Dict[str, Dict[str, str]] = {}
+    for e in db.get("elements", {}).values():
+        doc_id = e.get("doc_id")
+        field = e.get("field")
+        if not doc_id or not field:
+            continue
+        val = str(e.get("value", "")).strip()
+        if not val:
+            continue
+        doc_elements.setdefault(doc_id, {})
+        doc_elements[doc_id][field] = val
+
+    matrix = []
+    templates = sorted(db.get("templates", {}).values(), key=lambda t: (t.get("doc_type", ""), t.get("filename", "")))
+    for t in templates:
+        doc_type = t.get("doc_type") or "unknown"
+        schema_req = list(effective_schema(db, doc_type).get("required_fields", []))
+        template_fields = sorted(set(t.get("fields", []) or []))
+        t_fields = schema_req if doc_type != "unknown" and schema_req else template_fields
+        if not t_fields:
+            continue
+        candidates = [d for d in docs if d.get("doc_type") == doc_type]
+        best_doc = None
+        best_present: List[str] = []
+        for d in candidates:
+            present = [f for f in t_fields if doc_elements.get(d["doc_id"], {}).get(f)]
+            if len(present) > len(best_present):
+                best_present = present
+                best_doc = d
+        missing = [f for f in t_fields if f not in best_present]
+        pct = round((len(best_present) / len(t_fields)) * 100, 1) if t_fields else 100.0
+        matrix.append({
+            "template_id": t.get("template_id"),
+            "filename": t.get("filename"),
+            "doc_type": doc_type,
+            "required_total": len(t_fields),
+            "required_present": len(best_present),
+            "completeness_pct": pct,
+            "missing_fields": missing,
+            "matched_doc_id": best_doc.get("doc_id") if best_doc else None,
+            "matched_doc_filename": best_doc.get("filename") if best_doc else None,
+            "matched_doc_uploaded_at": best_doc.get("uploaded_at") if best_doc else None,
+            "scoring_basis": "doc_type_required_fields" if doc_type != "unknown" and schema_req else "template_fields",
+        })
+
+    if not matrix:
+        # Fallback matrix using base schemas when no templates exist.
+        for dt in required_types:
+            schema = effective_schema(db, dt)
+            req_fields = schema.get("required_fields", [])
+            candidates = [d for d in docs if d.get("doc_type") == dt]
+            best_doc = None
+            best_present: List[str] = []
+            for d in candidates:
+                present = [f for f in req_fields if doc_elements.get(d["doc_id"], {}).get(f)]
+                if len(present) > len(best_present):
+                    best_present = present
+                    best_doc = d
+            missing = [f for f in req_fields if f not in best_present]
+            pct = round((len(best_present) / len(req_fields)) * 100, 1) if req_fields else 100.0
+            matrix.append({
+                "template_id": None,
+                "filename": DOC_TYPES.get(dt, {}).get("label", dt),
+                "doc_type": dt,
+                "required_total": len(req_fields),
+                "required_present": len(best_present),
+                "completeness_pct": pct,
+                "missing_fields": missing,
+                "matched_doc_id": best_doc.get("doc_id") if best_doc else None,
+                "matched_doc_filename": best_doc.get("filename") if best_doc else None,
+                "matched_doc_uploaded_at": best_doc.get("uploaded_at") if best_doc else None,
+            })
+
+    matrix_avg = round(sum(m["completeness_pct"] for m in matrix) / len(matrix), 1) if matrix else 0.0
+    return {
+        "required_output_doc_types": required_types,
+        "present_output_doc_types": present_types,
+        "missing_output_doc_types": missing_types,
+        "required_output_total": len(required_types),
+        "present_output_total": len(present_types),
+        "output_doc_coverage_pct": output_doc_coverage_pct,
+        "avg_document_field_completeness_pct": avg_field_completeness,
+        "output_template_matrix": matrix,
+        "output_template_matrix_avg_pct": matrix_avg,
+    }
+
+def primary_template_for_doc_type(db: dict, doc_type: str) -> Optional[dict]:
+    candidates = [t for t in db.get("templates", {}).values() if t.get("doc_type") == doc_type]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: (t.get("field_count", 0), t.get("ingested_at", "")), reverse=True)
+    return candidates[0]
+
+# ── doc type detection ────────────────────────────────────────────────────────
+def detect_doc_type(text: str, filename: str) -> str:
+    tl = (text + filename).lower()
+    scores = {
+        "clinical_evaluation_protocol": sum(1 for k in [
+            "clinical evaluation","literature search","equivalen",
+            "clinical data","benefit.*risk","mdr","mdcg"
+        ] if re.search(k,tl)),
+        "risk_management_report": sum(1 for k in [
+            "risk management","iso 14971","hazard","fmea","residual risk"
+        ] if re.search(k,tl)),
+        "test_protocol": sum(1 for k in [
+            "test protocol","test procedure","acceptance criteria",
+            "sample size","pass.*fail","test standard"
+        ] if re.search(k,tl)),
+        "design_history_file": sum(1 for k in [
+            "design history","design input","design output",
+            "design verification","dhf"
+        ] if re.search(k,tl)),
+    }
+    best = max(scores, key=lambda k: scores[k])
+    return best if scores[best] > 0 else "unknown"
+
+# ── heuristic extraction ──────────────────────────────────────────────────────
+def heuristic_extract(text: str, doc_type: str, field_filter: Optional[Set[str]] = None, source: str = "heuristic_regex", section: str = "Document-wide") -> Dict[str,Dict]:
+    fields = {}
+    patterns = {
+        "document_title":    r"(?:title|document title)[:\s]+([^\n]{5,120})",
+        "document_number":   r"(?:doc(?:ument)?\s*(?:no|number|#|id))[:\s#]+([A-Z0-9\-\/]{3,40})",
+        "version":           r"(?:version|rev(?:ision)?)[:\s]+([0-9A-Za-z\.]{1,20})",
+        "date":              r"(?:date)[:\s]+(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|\w+ \d{1,2},? \d{4}|\d{4}-\d{2}-\d{2})",
+        "device_name":       r"(?:device name|product name)[:\s]+([^\n]{3,80})",
+        "device_model":      r"(?:model(?:\s*no)?)[:\s]+([^\n]{2,60})",
+        "manufacturer_name": r"(?:manufacturer|company)[:\s]+([^\n]{3,80})",
+        "author":            r"(?:author|prepared by|written by)[:\s]+([^\n]{3,80})",
+        "reviewer":          r"(?:reviewer|reviewed by|approved by)[:\s]+([^\n]{3,80})",
+        "intended_purpose":  r"(?:intended purpose|intended use)[:\s]+([^\n]{10,300})",
+        "regulatory_framework": r"(MDR 2017/745|IVDR 2017/746|FDA 21 CFR|ISO 13485|ISO 14155)",
+        "evaluation_scope":  r"(?:scope|evaluation scope)[:\s]+([^\n]{10,300})",
+        "risk_management_standard": r"(ISO 14971:\d{4})",
+        "test_standard":     r"(?:standard|test standard)[:\s]+([^\n]{3,80})",
+        "acceptance_criteria": r"(?:acceptance criteria)[:\s]+([^\n]{5,200})",
+        "sample_size":       r"(?:sample size)[:\s]+(\d+[^\n]{0,50})",
+        "literature_search_strategy": r"(?:literature search|search strategy)[:\s]+([^\n]{10,300})",
+        "inclusion_criteria": r"(?:inclusion criteria?|inclusion)[:\s]+([^\n]{10,300})",
+        "exclusion_criteria": r"(?:exclusion criteria?|exclusion)[:\s]+([^\n]{10,300})",
+        "clinical_data_sources": r"(?:clinical data sources?|data sources?)[:\s]+([^\n]{10,300})",
+        "biocompatibility_standard": r"(ISO\s*10993(?:\-\d+)?)",
+        "biological_endpoints_evaluated": r"(?:biological endpoints evaluated|endpoints evaluated)[:\s]+([^\n]{8,300})",
+        "biocompatibility_assessment": r"(?:biocompatibility (?:assessment|evaluation|summary))[:\s]+([^\n]{10,400})",
+        "cytotoxicity_result": r"(?:cytotoxicity(?:\s*test)?(?:\s*result)?|in vitro cytotoxicity)[:\s]+([^\n]{5,300})",
+        "sensitization_result": r"(?:sensitization(?:\s*test)?(?:\s*result)?|skin sensitization)[:\s]+([^\n]{5,300})",
+        "irritation_result": r"(?:irritation(?:\/intracutaneous reactivity)?(?:\s*test)?(?:\s*result)?)[:\s]+([^\n]{5,300})",
+    }
+    for field, pattern in patterns.items():
+        if field_filter is not None and field not in field_filter:
+            continue
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            val = m.group(1).strip()
+            start = max(0, m.start()-60)
+            end   = min(len(text), m.end()+60)
+            evidence = text[start:end].replace("\n"," ").strip()
+            fields[field] = {
+                "value": val, "confidence": 0.7,
+                "source": source, "evidence": evidence, "section": section
+            }
+
+    # Biocompatibility-specific pass for table/line style content (ISO 10993 lists).
+    def extract_biocompatibility_structured(txt: str) -> Dict[str, Dict]:
+        out: Dict[str, Dict] = {}
+        if not re.search(r"biocompat|iso\s*10993|cytotoxic|sensitization|irritation", txt, re.IGNORECASE):
+            return out
+
+        lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+        joined = " ".join(lines)
+        iso_hits = sorted(set(re.findall(r"ISO\s*10993(?:\-\d+)?", joined, re.IGNORECASE)))
+        if iso_hits:
+            val = ", ".join(iso_hits)
+            out["biocompatibility_standard"] = {
+                "value": val,
+                "confidence": 0.9,
+                "source": source,
+                "evidence": val,
+                "section": section
+            }
+
+        endpoint_map = {
+            "cytotoxicity_result": (r"cytotoxic(?:ity)?", "Cytotoxicity"),
+            "sensitization_result": (r"sensitization|skin sensitization", "Sensitization"),
+            "irritation_result": (r"irritation|intracutaneous reactivity", "Irritation / Intracutaneous Reactivity"),
+        }
+        endpoints_found = []
+        for field_name, (kw_pat, label) in endpoint_map.items():
+            if re.search(kw_pat, joined, re.IGNORECASE):
+                endpoints_found.append(label)
+                # Prefer line-level evidence that includes endpoint + ISO tag.
+                if field_name == "irritation_result":
+                    line_hit = next(
+                        (ln for ln in lines if re.search(r"intracutaneous reactivity", ln, re.IGNORECASE) and re.search(r"ISO\s*10993", ln, re.IGNORECASE)),
+                        None
+                    )
+                    if not line_hit:
+                        line_hit = next(
+                            (ln for ln in lines if re.search(r"\birritation\b", ln, re.IGNORECASE) and re.search(r"ISO\s*10993", ln, re.IGNORECASE)),
+                            None
+                        )
+                else:
+                    line_hit = next(
+                        (ln for ln in lines if re.search(kw_pat, ln, re.IGNORECASE) and re.search(r"ISO\s*10993", ln, re.IGNORECASE)),
+                        None
+                    )
+                if not line_hit:
+                    line_hit = next((ln for ln in lines if re.search(kw_pat, ln, re.IGNORECASE)), "")
+                out[field_name] = {
+                    "value": line_hit or label,
+                    "confidence": 0.88,
+                    "source": source,
+                    "evidence": (line_hit or label)[:220],
+                    "section": section
+                }
+
+        if endpoints_found:
+            out["biological_endpoints_evaluated"] = {
+                "value": ", ".join(endpoints_found),
+                "confidence": 0.9,
+                "source": source,
+                "evidence": ", ".join(endpoints_found),
+                "section": section
+            }
+            out["biocompatibility_assessment"] = {
+                "value": f"Biocompatibility endpoints covered: {', '.join(endpoints_found)}.",
+                "confidence": 0.82,
+                "source": source,
+                "evidence": ", ".join(endpoints_found),
+                "section": section
+            }
+        return out
+
+    structured = extract_biocompatibility_structured(text)
+    for f, cand in structured.items():
+        if field_filter is not None and f not in field_filter:
+            continue
+        cur = fields.get(f)
+        if not cur:
+            fields[f] = cand
+            continue
+        if len(str(cand.get("value", ""))) > len(str(cur.get("value", ""))):
+            fields[f] = cand
+    return fields
+
+# ── Groq extraction ───────────────────────────────────────────────────────────
+def groq_extract_fields(text: str, doc_type: str, fields: List[str], source: str = "groq_llm", section: str = "Document-wide") -> Dict[str,Dict]:
+    if not fields:
+        return {}
+    db = load_db()
+    schema = effective_schema(db, doc_type)
+    truncated = text[:6000]
+    system = textwrap.dedent("""
+        You are a medical device regulatory document analyst.
+        Extract structured fields from the document text.
+        Return ONLY valid JSON — no markdown, no explanation.
+        For each found field return:
+        { "field_name": { "value": "...", "evidence": "exact quote up to 120 chars", "confidence": 0.0-1.0 } }
+        Omit fields not found.
+    """).strip()
+    prompt = f"""Document type: {schema['label']}
+Fields to extract: {json.dumps(fields)}
+Document text:
+---
+{truncated}
+---
+JSON only."""
+    raw = groq_complete(prompt, system=system, max_tokens=2000)
+    try:
+        raw = re.sub(r"```(?:json)?|```","",raw).strip()
+        parsed = json.loads(raw)
+        out = {}
+        for k,v in parsed.items():
+            if isinstance(v,dict) and "value" in v:
+                out[k] = {
+                    "value": str(v.get("value","")),
+                    "confidence": float(v.get("confidence",0.85)),
+                    "source": source,
+                    "evidence": str(v.get("evidence",""))[:200],
+                    "section": section
+                }
+        return out
+    except Exception as e:
+        audit("groq_parse_error",{"error":str(e),"raw":raw[:300]})
+        return {}
+
+def groq_extract(text: str, doc_type: str) -> Dict[str,Dict]:
+    db = load_db()
+    schema = effective_schema(db, doc_type)
+    all_fields = schema["required_fields"] + schema["optional_fields"]
+    return groq_extract_fields(text, doc_type, all_fields, source="groq_llm", section="Document-wide")
+
+def merge_extracted_values(base: Dict[str, Dict], incoming: Dict[str, Dict]) -> Dict[str, Dict]:
+    for field, cand in incoming.items():
+        if field not in base:
+            base[field] = cand
+            continue
+        current = base[field]
+        cur_val = str(current.get("value", "")).strip()
+        new_val = str(cand.get("value", "")).strip()
+        if not cur_val and new_val:
+            base[field] = cand
+            continue
+        if new_val and float(cand.get("confidence", 0.0)) > float(current.get("confidence", 0.0)):
+            base[field] = cand
+    return base
+
+def section_aware_extract(text: str, doc_type: str) -> tuple[Dict[str,Dict], List[Dict[str, object]]]:
+    db = load_db()
+    schema = effective_schema(db, doc_type)
+    all_fields = schema["required_fields"] + schema["optional_fields"]
+    return section_aware_extract_rag(
+        text=text,
+        doc_type=doc_type,
+        all_fields=all_fields,
+        required_fields=schema["required_fields"],
+        use_groq=bool(get_groq()),
+        groq_extract_fields=groq_extract_fields,
+        heuristic_extract=heuristic_extract,
+    )
+
+# ── suggestion generation ─────────────────────────────────────────────────────
+HEURISTIC_DEFAULTS = {
+    "regulatory_framework": "MDR 2017/745 (EU)",
+    "risk_management_standard": "ISO 14971:2019",
+    "version": "1.0",
+    "evaluation_scope": "Full clinical evaluation per MEDDEV 2.7/1 rev 4",
+    "literature_search_strategy": "Systematic search of PubMed, Embase, and manufacturer data",
+    "benefit_risk_assessment": "Benefits outweigh residual risks based on available clinical evidence",
+    "clinical_data_sources": "Published literature, post-market surveillance data, clinical investigations",
+    "inclusion_criteria": "Peer-reviewed studies using the device or an equivalent device",
+    "exclusion_criteria": "Case reports, animal studies, studies with fewer than 10 subjects",
+    "conclusions": "Based on the clinical evidence reviewed, the device demonstrates acceptable safety and performance.",
+    "reviewer": "Head of Regulatory Affairs",
+}
+
+def generate_suggestions(doc_id: str, doc_type: str, extracted: Dict[str,Dict], text: str) -> List[Dict]:
+    db = load_db()
+    schema = effective_schema(db, doc_type)
+    missing = [f for f in schema["required_fields"] if f not in extracted]
+    if not missing:
+        return []
+    suggestions = []
+    client_available = bool(get_groq())
+    if client_available and text:
+        system = textwrap.dedent("""
+            You are a medical device regulatory expert.
+            For each missing field, propose a value based on context and regulatory best practices.
+            Return ONLY valid JSON:
+            { "field_name": { "suggested_value": "...", "rationale": "why, up to 150 chars" } }
+            Omit fields you cannot suggest.
+        """).strip()
+        prompt = f"""Document type: {schema['label']}
+Missing required fields: {json.dumps(missing)}
+Already extracted: {json.dumps({k:v['value'] for k,v in extracted.items()})}
+Document excerpt:
+---
+{text[:4000]}
+---
+JSON only."""
+        raw = groq_complete(prompt, system=system, max_tokens=1500)
+        try:
+            raw = re.sub(r"```(?:json)?|```","",raw).strip()
+            proposed = json.loads(raw)
+            for field, data in proposed.items():
+                if field in missing and isinstance(data,dict):
+                    suggestions.append({
+                        "id": str(uuid.uuid4()), "doc_id": doc_id, "field": field,
+                        "suggested_value": str(data.get("suggested_value","")),
+                        "rationale": str(data.get("rationale",""))[:200],
+                        "source": "groq_suggestion", "status": "pending"
+                    })
+        except Exception as e:
+            audit("suggestion_parse_error",{"error":str(e)})
+    filled = {s["field"] for s in suggestions}
+    for field in missing:
+        if field not in filled and field in HEURISTIC_DEFAULTS:
+            suggestions.append({
+                "id": str(uuid.uuid4()), "doc_id": doc_id, "field": field,
+                "suggested_value": HEURISTIC_DEFAULTS[field],
+                "rationale": "Regulatory best-practice default for this document type",
+                "source": "heuristic_default", "status": "pending"
+            })
+    return suggestions
+
+# ── completeness ──────────────────────────────────────────────────────────────
+def compute_completeness(doc_type: str, extracted: Dict) -> Dict:
+    db = load_db()
+    schema = effective_schema(db, doc_type)
+    req = schema["required_fields"]
+    opt = schema["optional_fields"]
+    present_req = [f for f in req if f in extracted and str(extracted[f].get("value","")).strip()]
+    present_opt = [f for f in opt if f in extracted and str(extracted[f].get("value","")).strip()]
+    pct = round(len(present_req)/len(req)*100,1) if req else 100.0
+    return {
+        "required_total": len(req), "required_present": len(present_req),
+        "optional_total": len(opt), "optional_present": len(present_opt),
+        "completeness_pct": pct,
+        "missing_required": [f for f in req if f not in present_req]
+    }
+
+def infer_field_relationship_pairs(doc_type: str) -> List[Dict[str, str]]:
+    common = [
+        {"from": "document_number", "to": "version", "type": "field_related", "reason": "document_identity"},
+        {"from": "document_number", "to": "date", "type": "field_related", "reason": "document_identity"},
+        {"from": "device_name", "to": "device_model", "type": "field_related", "reason": "device_identity"},
+        {"from": "device_name", "to": "manufacturer_name", "type": "field_related", "reason": "device_identity"},
+    ]
+    doc_specific = {
+        "clinical_evaluation_protocol": [
+            {"from": "intended_purpose", "to": "evaluation_scope", "type": "field_related", "reason": "clinical_logic"},
+            {"from": "clinical_data_sources", "to": "literature_search_strategy", "type": "field_related", "reason": "evidence_chain"},
+            {"from": "benefit_risk_assessment", "to": "conclusions", "type": "field_related", "reason": "conclusion_basis"},
+        ],
+        "risk_management_report": [
+            {"from": "hazard_identification", "to": "risk_estimation", "type": "field_related", "reason": "risk_flow"},
+            {"from": "risk_estimation", "to": "risk_evaluation", "type": "field_related", "reason": "risk_flow"},
+            {"from": "risk_evaluation", "to": "risk_control_measures", "type": "field_related", "reason": "risk_flow"},
+            {"from": "risk_control_measures", "to": "residual_risk_assessment", "type": "field_related", "reason": "risk_flow"},
+        ],
+        "test_protocol": [
+            {"from": "test_objective", "to": "test_procedure", "type": "field_related", "reason": "test_design"},
+            {"from": "test_standard", "to": "acceptance_criteria", "type": "field_related", "reason": "test_design"},
+            {"from": "acceptance_criteria", "to": "pass_fail_criteria", "type": "field_related", "reason": "test_design"},
+        ],
+        "design_history_file": [
+            {"from": "design_input", "to": "design_output", "type": "field_related", "reason": "design_flow"},
+            {"from": "design_output", "to": "design_verification", "type": "field_related", "reason": "design_flow"},
+            {"from": "design_output", "to": "design_validation", "type": "field_related", "reason": "design_flow"},
+        ],
+    }
+    return common + doc_specific.get(doc_type, [])
+
+def rebuild_doc_element_relationships(db: dict, doc_id: str, doc_type: str):
+    # Remove previous inferred relationships for this document.
+    doc_elem_ids = {e["elem_id"] for e in db["elements"].values() if e.get("doc_id") == doc_id}
+    db["relationships"] = [
+        r for r in db["relationships"]
+        if not (r.get("type") == "field_related" and r.get("from") in doc_elem_ids and r.get("to") in doc_elem_ids)
+    ]
+
+    field_to_elem = {e["field"]: e for e in db["elements"].values() if e.get("doc_id") == doc_id}
+    for rel in infer_field_relationship_pairs(doc_type):
+        a = field_to_elem.get(rel["from"])
+        b = field_to_elem.get(rel["to"])
+        if not a or not b:
+            continue
+        if not str(a.get("value", "")).strip() or not str(b.get("value", "")).strip():
+            continue
+        db["relationships"].append({
+            "from": a["elem_id"], "to": b["elem_id"],
+            "type": rel["type"], "reason": rel["reason"]
+        })
+
+def generate_output_lines(doc: dict, elements: Dict[str, dict], schema: dict, template: Optional[dict] = None) -> List[str]:
+    def fv(f):
+        e = elements.get(f)
+        return e["value"] if e else "[NOT PROVIDED]"
+
+    ts = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    lines = [
+        "="*80,
+        f"  {schema['label'].upper()}",
+        f"  Generated by MedDoc Intake POC  |  {ts}",
+        "="*80,"",
+        "DOCUMENT INFORMATION","--------------------",
+        f"Title:           {fv('document_title')}",
+        f"Document No.:    {fv('document_number')}",
+        f"Version:         {fv('version')}",
+        f"Date:            {fv('date')}",
+        f"Author:          {fv('author')}",
+        f"Reviewer:        {fv('reviewer')}","",
+        "DEVICE INFORMATION","------------------",
+        f"Device Name:     {fv('device_name')}",
+        f"Device Model:    {fv('device_model')}",
+        f"Manufacturer:    {fv('manufacturer_name')}","",
+    ]
+    if doc["doc_type"]=="clinical_evaluation_protocol":
+        lines += [
+            "REGULATORY FRAMEWORK","---------------------",fv('regulatory_framework'),"",
+            "INTENDED PURPOSE","----------------",fv('intended_purpose'),"",
+            "EVALUATION SCOPE","----------------",fv('evaluation_scope'),"",
+            "LITERATURE SEARCH STRATEGY","--------------------------",fv('literature_search_strategy'),"",
+            "INCLUSION CRITERIA","------------------",fv('inclusion_criteria'),"",
+            "EXCLUSION CRITERIA","------------------",fv('exclusion_criteria'),"",
+            "CLINICAL DATA SOURCES","---------------------",fv('clinical_data_sources'),"",
+            "EQUIVALENCE DEVICE","------------------",fv('equivalence_device'),"",
+            "BENEFIT-RISK ASSESSMENT","-----------------------",fv('benefit_risk_assessment'),"",
+            "CONCLUSIONS","-----------",fv('conclusions'),"",
+        ]
+    lines += [
+        "COMPLETENESS SUMMARY","--------------------",
+        f"Required fields present: {doc['completeness']['required_present']}/{doc['completeness']['required_total']}",
+        f"Completeness: {doc['completeness']['completeness_pct']}%",
+        f"Missing: {', '.join(doc['completeness']['missing_required']) or 'None'}","",
+        "TRACEABILITY","------------",
+        f"Source document: {doc['filename']}",
+        f"Ingested at:     {doc['uploaded_at']}",
+        f"SHA-256:         {doc['sha256']}","",
+        "FIELD AUDIT TRAIL","-----------------",
+    ]
+    for field in schema["required_fields"]+schema["optional_fields"]:
+        e = elements.get(field)
+        if e:
+            ev = e['evidence'][:70].replace('\n',' ') if e.get('evidence') else "—"
+            lines.append(f"  {field:<35} | src={e['source']:<22} | conf={int(e['confidence']*100)}% | ev: {ev}")
+    if template and template.get("fields"):
+        lines += ["", "TEMPLATE ALIGNMENT", "------------------"]
+        lines.append(f"Template source: {template.get('filename','(unknown)')}")
+        for f in template.get("fields", []):
+            val = elements.get(f, {}).get("value", "[NOT PROVIDED]")
+            lines.append(f"  {f:<35} | {val}")
+    lines += ["","="*80,f"  END OF DOCUMENT  |  {ts}","="*80]
+    return lines
+
+def write_output_docx(doc_id: str, doc: dict, elements: Dict[str, dict], schema: dict, template: Optional[dict] = None) -> Path:
+    out_path = OUTPUTS / f"{doc_id}_output.docx"
+    d = DocxDoc()
+    d.add_heading(schema["label"], level=1)
+    d.add_paragraph(f"Generated by MedDoc Intake POC")
+    d.add_paragraph(f"Timestamp: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+
+    def add_kv(title: str, field: str):
+        val = elements.get(field, {}).get("value", "[NOT PROVIDED]")
+        p = d.add_paragraph()
+        p.add_run(f"{title}: ").bold = True
+        p.add_run(str(val))
+
+    d.add_heading("Document Information", level=2)
+    add_kv("Title", "document_title")
+    add_kv("Document No.", "document_number")
+    add_kv("Version", "version")
+    add_kv("Date", "date")
+    add_kv("Author", "author")
+    add_kv("Reviewer", "reviewer")
+
+    d.add_heading("Device Information", level=2)
+    add_kv("Device Name", "device_name")
+    add_kv("Device Model", "device_model")
+    add_kv("Manufacturer", "manufacturer_name")
+
+    d.add_heading("Completeness Summary", level=2)
+    d.add_paragraph(f"Required fields present: {doc['completeness']['required_present']}/{doc['completeness']['required_total']}")
+    d.add_paragraph(f"Completeness: {doc['completeness']['completeness_pct']}%")
+    d.add_paragraph(f"Missing: {', '.join(doc['completeness']['missing_required']) or 'None'}")
+
+    d.add_heading("Template-Aligned Fields", level=2)
+    if template and template.get("fields"):
+        d.add_paragraph(f"Template source: {template.get('filename','(unknown)')}")
+        template_fields = template.get("fields", [])
+    else:
+        template_fields = schema["optional_fields"]
+    for f in template_fields:
+        add_kv(f, f)
+
+    d.add_heading("Field Audit Trail", level=2)
+    for field in schema["required_fields"] + schema["optional_fields"]:
+        e = elements.get(field)
+        if not e:
+            continue
+        d.add_paragraph(
+            f"{field} | src={e.get('source')} | conf={int(e.get('confidence',0)*100)}% | ev: {str(e.get('evidence',''))[:120]}"
+        )
+
+    d.save(str(out_path))
+    return out_path
+
+# ── FastAPI ───────────────────────────────────────────────────────────────────
+app = FastAPI(title="MedDoc Intake POC", version="0.1.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.include_router(system_router)
+app.include_router(meta_router)
+
+@app.post("/api/documents/upload")
+async def upload_document(file: UploadFile = File(...)):
+    content = await file.read()
+    sha256  = hashlib.sha256(content).hexdigest()
+    db = load_db()
+    for doc_id, doc in db["documents"].items():
+        if doc.get("sha256") == sha256:
+            audit("upload_dedup",{"sha256":sha256,"existing":doc_id,"filename":file.filename})
+            return {"doc_id":doc_id,"deduplicated":True,"message":"Already ingested."}
+    doc_id = str(uuid.uuid4())
+    ext    = Path(file.filename).suffix.lower()
+    saved  = UPLOADS / f"{doc_id}{ext}"
+    saved.write_bytes(content)
+    mime_map = {".pdf":"application/pdf",".docx":"application/vnd.openxmlformats-officedocument.wordprocessingml.document",".txt":"text/plain"}
+    mime = mime_map.get(ext,"text/plain")
+    text     = extract_text(saved, mime)
+    doc_type = detect_doc_type(text, file.filename)
+    extracted, section_summary = section_aware_extract(text, doc_type)
+    completeness = compute_completeness(doc_type, extracted)
+    suggestions  = generate_suggestions(doc_id, doc_type, extracted, text)
+    doc_node = {
+        "doc_id":doc_id,"filename":file.filename,"sha256":sha256,
+        "doc_type":doc_type,"uploaded_at":datetime.datetime.utcnow().isoformat(),
+        "status":"extracted","text_length":len(text),
+        "completeness":completeness,"suggestions":suggestions,
+        "section_summary": section_summary
+    }
+    db["documents"][doc_id] = doc_node
+    for field_name, field_data in extracted.items():
+        elem_id = str(uuid.uuid4())
+        db["elements"][elem_id] = {
+            "elem_id":elem_id,"doc_id":doc_id,"field":field_name,
+            "value":field_data["value"],"confidence":field_data["confidence"],
+            "source":field_data["source"],"evidence":field_data["evidence"],
+            "section": field_data.get("section", "Document-wide"),
+            "edited":False,"edited_at":None
+        }
+        db["relationships"].append({"from":doc_id,"to":elem_id,"type":"has_field"})
+        if field_name not in db["schema_registry"]:
+            db["schema_registry"][field_name] = {"type":"string","docs_seen_in":[],"required_in":[]}
+        reg = db["schema_registry"][field_name]
+        if doc_id not in reg["docs_seen_in"]:
+            reg["docs_seen_in"].append(doc_id)
+        if doc_type not in reg.get("required_in",[]):
+            if field_name in DOC_TYPES.get(doc_type,{}).get("required_fields",[]):
+                reg.setdefault("required_in",[]).append(doc_type)
+    rebuild_doc_element_relationships(db, doc_id, doc_type)
+    save_db(db)
+    audit("document_uploaded",{"doc_id":doc_id,"filename":file.filename,"doc_type":doc_type,"completeness_pct":completeness["completeness_pct"]})
+    return {
+        "doc_id":doc_id,"deduplicated":False,"doc_type":doc_type,
+        "completeness":completeness,"field_count":len(extracted),
+        "section_summary": section_summary
+    }
+
+@app.get("/api/documents")
+def list_documents():
+    db = load_db()
+    docs = list(db["documents"].values())
+    docs.sort(key=lambda d: d.get("uploaded_at", ""), reverse=True)
+    pkg = package_completeness_summary(db)
+    # Keep legacy key for UI compatibility; now points to output-doc coverage.
+    return {
+        "documents": docs,
+        "package_completeness_pct": pkg["output_doc_coverage_pct"],
+        "package": pkg
+    }
+
+@app.get("/api/documents/{doc_id}")
+def get_document(doc_id: str):
+    db = load_db()
+    doc = db["documents"].get(doc_id)
+    if not doc:
+        raise HTTPException(404,"Document not found")
+    elements = [e for e in db["elements"].values() if e["doc_id"]==doc_id]
+    elem_ids = {e["elem_id"] for e in elements}
+    related = [r for r in db["relationships"] if r.get("type") == "field_related" and r.get("from") in elem_ids and r.get("to") in elem_ids]
+    return {**doc,"elements":elements, "field_relationships": related}
+
+@app.patch("/api/documents/{doc_id}/fields")
+def edit_field(doc_id: str, body: FieldEdit):
+    db = load_db()
+    elem = db["elements"].get(body.elem_id)
+    if not elem or elem["doc_id"]!=doc_id:
+        raise HTTPException(404,"Element not found")
+    old = elem["value"]
+    elem["value"]    = body.new_value
+    elem["edited"]   = True
+    elem["edited_at"]= datetime.datetime.utcnow().isoformat()
+    doc = db["documents"][doc_id]
+    all_elems = {e["field"]:e for e in db["elements"].values() if e["doc_id"]==doc_id}
+    doc["completeness"] = compute_completeness(doc["doc_type"],{f:{"value":e["value"]} for f,e in all_elems.items()})
+    rebuild_doc_element_relationships(db, doc_id, doc["doc_type"])
+    save_db(db)
+    audit("field_edited",{"doc_id":doc_id,"field":elem["field"],"old":old,"new":body.new_value})
+    return {"ok":True,"completeness":doc["completeness"]}
+
+@app.post("/api/documents/{doc_id}/suggestions/{suggestion_id}")
+def handle_suggestion(doc_id: str, suggestion_id: str, body: SuggestionAction):
+    db = load_db()
+    doc = db["documents"].get(doc_id)
+    if not doc:
+        raise HTTPException(404,"Document not found")
+    sugg = next((s for s in doc["suggestions"] if s["id"]==suggestion_id),None)
+    if not sugg:
+        raise HTTPException(404,"Suggestion not found")
+    sugg["status"] = body.action
+    value_to_apply = None
+    if body.action=="accept":
+        value_to_apply = sugg["suggested_value"]
+    elif body.action=="edit" and body.edited_value:
+        sugg["suggested_value"] = body.edited_value
+        value_to_apply = body.edited_value
+    if value_to_apply is not None:
+        elem_id = str(uuid.uuid4())
+        db["elements"][elem_id] = {
+            "elem_id":elem_id,"doc_id":doc_id,"field":sugg["field"],
+            "value":value_to_apply,"confidence":1.0,
+            "source":f"suggestion_{body.action}",
+            "evidence":f"Suggestion: {sugg['rationale']}",
+            "section":"Suggestions",
+            "edited":body.action=="edit","edited_at":datetime.datetime.utcnow().isoformat()
+        }
+        db["relationships"].append({"from":doc_id,"to":elem_id,"type":"has_field"})
+        all_elems = {e["field"]:e for e in db["elements"].values() if e["doc_id"]==doc_id}
+        doc["completeness"] = compute_completeness(doc["doc_type"],{f:{"value":e["value"]} for f,e in all_elems.items()})
+    rebuild_doc_element_relationships(db, doc_id, doc["doc_type"])
+    save_db(db)
+    audit("suggestion_actioned",{"doc_id":doc_id,"field":sugg["field"],"action":body.action})
+    return {"ok":True,"completeness":doc["completeness"]}
+
+@app.post("/api/documents/{doc_id}/reprocess")
+def reprocess_document(doc_id: str, body: Optional[ReprocessRequest] = None):
+    req = body or ReprocessRequest()
+    db = load_db()
+    doc = db["documents"].get(doc_id)
+    if not doc:
+        raise HTTPException(404, "Document not found")
+
+    # Find persisted uploaded source for this doc.
+    matches = sorted(UPLOADS.glob(f"{doc_id}.*"))
+    if not matches:
+        raise HTTPException(404, "Original uploaded file not found for this document")
+    src_path = matches[0]
+    ext = src_path.suffix.lower()
+    mime_map = {".pdf":"application/pdf",".docx":"application/vnd.openxmlformats-officedocument.wordprocessingml.document",".txt":"text/plain"}
+    mime = mime_map.get(ext, "text/plain")
+    text = extract_text(src_path, mime)
+    doc_type = req.force_doc_type if req.force_doc_type else detect_doc_type(text, doc.get("filename",""))
+
+    extracted, section_summary = section_aware_extract(text, doc_type)
+
+    # Preserve manual/suggestion edits if requested.
+    existing = [e for e in db["elements"].values() if e["doc_id"] == doc_id]
+    if req.preserve_manual_edits:
+        for e in existing:
+            if e.get("edited") or str(e.get("source","")).startswith("suggestion_"):
+                extracted[e["field"]] = {
+                    "value": e.get("value",""),
+                    "confidence": float(e.get("confidence",1.0)),
+                    "source": e.get("source","manual_preserved"),
+                    "evidence": e.get("evidence","Preserved from prior manual/suggestion action"),
+                    "section": e.get("section","Manual edits")
+                }
+
+    # Remove old elements and their direct/field-related relationships.
+    old_ids = {e["elem_id"] for e in existing}
+    for elem_id in old_ids:
+        db["elements"].pop(elem_id, None)
+    db["relationships"] = [
+        r for r in db["relationships"]
+        if not ((r.get("from") in old_ids or r.get("to") in old_ids) and r.get("type") in {"has_field","field_related"})
+    ]
+
+    # Recreate elements from refreshed extraction.
+    for field_name, field_data in extracted.items():
+        elem_id = str(uuid.uuid4())
+        db["elements"][elem_id] = {
+            "elem_id":elem_id,"doc_id":doc_id,"field":field_name,
+            "value":field_data["value"],"confidence":field_data["confidence"],
+            "source":field_data["source"],"evidence":field_data["evidence"],
+            "section": field_data.get("section", "Document-wide"),
+            "edited": str(field_data.get("source","")).startswith("suggestion_"),
+            "edited_at": datetime.datetime.utcnow().isoformat() if str(field_data.get("source","")).startswith("suggestion_") else None
+        }
+        db["relationships"].append({"from":doc_id,"to":elem_id,"type":"has_field"})
+
+        reg = db["schema_registry"].setdefault(field_name, {"type":"string","docs_seen_in":[],"required_in":[]})
+        reg.setdefault("docs_seen_in", [])
+        reg.setdefault("required_in", [])
+        if doc_id not in reg["docs_seen_in"]:
+            reg["docs_seen_in"].append(doc_id)
+        if field_name in DOC_TYPES.get(doc_type, {}).get("required_fields", []) and doc_type not in reg["required_in"]:
+            reg["required_in"].append(doc_type)
+
+    doc["doc_type"] = doc_type
+    doc["text_length"] = len(text)
+    doc["completeness"] = compute_completeness(doc_type, extracted)
+    doc["suggestions"] = generate_suggestions(doc_id, doc_type, extracted, text)
+    doc["section_summary"] = section_summary
+    doc["status"] = "reprocessed"
+    rebuild_doc_element_relationships(db, doc_id, doc_type)
+    save_db(db)
+    audit("document_reprocessed", {
+        "doc_id": doc_id,
+        "doc_type": doc_type,
+        "preserve_manual_edits": req.preserve_manual_edits,
+        "field_count": len(extracted)
+    })
+    return {
+        "ok": True,
+        "doc_id": doc_id,
+        "doc_type": doc_type,
+        "completeness": doc["completeness"],
+        "field_count": len(extracted),
+        "section_summary": section_summary
+    }
+
+@app.post("/api/documents/{doc_id}/generate")
+def generate_output(doc_id: str):
+    db = load_db()
+    doc = db["documents"].get(doc_id)
+    if not doc:
+        raise HTTPException(404,"Document not found")
+    elements = {e["field"]:e for e in db["elements"].values() if e["doc_id"]==doc_id}
+    doc_type = doc["doc_type"]
+    schema = effective_schema(db, doc_type)
+    template = primary_template_for_doc_type(db, doc_type)
+    lines = generate_output_lines(doc, elements, schema, template=template)
+    out_path = OUTPUTS/f"{doc_id}_output.txt"
+    out_path.write_text("\n".join(lines))
+    doc["status"] = "output_generated"
+    save_db(db)
+    audit("output_generated",{"doc_id":doc_id})
+    return {"ok":True,"download_url":f"/api/documents/{doc_id}/download"}
+
+@app.post("/api/documents/{doc_id}/generate-docx")
+def generate_output_docx(doc_id: str):
+    db = load_db()
+    doc = db["documents"].get(doc_id)
+    if not doc:
+        raise HTTPException(404,"Document not found")
+    if not DOCX_OK:
+        raise HTTPException(500,"DOCX generation dependency unavailable")
+    elements = {e["field"]:e for e in db["elements"].values() if e["doc_id"]==doc_id}
+    schema = effective_schema(db, doc["doc_type"])
+    template = primary_template_for_doc_type(db, doc["doc_type"])
+    out_path = write_output_docx(doc_id, doc, elements, schema, template=template)
+    doc["status"] = "output_generated_docx"
+    save_db(db)
+    audit("output_generated_docx",{"doc_id":doc_id,"path":str(out_path)})
+    return {"ok":True,"download_url":f"/api/documents/{doc_id}/download-docx"}
+
+@app.get("/api/documents/{doc_id}/download")
+def download_output(doc_id: str):
+    out_path = OUTPUTS/f"{doc_id}_output.txt"
+    if not out_path.exists():
+        raise HTTPException(404,"Generate output first.")
+    return FileResponse(str(out_path),filename=f"output_{doc_id[:8]}.txt",media_type="text/plain")
+
+@app.get("/api/documents/{doc_id}/download-docx")
+def download_output_docx(doc_id: str):
+    out_path = OUTPUTS/f"{doc_id}_output.docx"
+    if not out_path.exists():
+        raise HTTPException(404,"Generate DOCX output first.")
+    return FileResponse(
+        str(out_path),
+        filename=f"output_{doc_id[:8]}.docx",
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+
+# ── Sample data loader ────────────────────────────────────────────────────────
+SAMPLE_CEP_TEXT = """
+CLINICAL EVALUATION PROTOCOL
+Document Title: Clinical Evaluation Protocol - CardioTrack 3000
+Document No.: CEP-CT3000-001
+Version: 1.0
+Date: 2024-03-15
+Prepared by: Dr. Sarah Chen
+Department: Regulatory Affairs & Clinical
+Manufacturer: MedTech Solutions GmbH
+Address: Innovationsstrasse 42, 80333 Munich, Germany
+
+1. INTRODUCTION
+This Clinical Evaluation Protocol (CEP) defines the methodology for the clinical evaluation
+of the CardioTrack 3000 (Model: CT3000-EU), a continuous cardiac monitoring device
+intended for use in adult patients in intensive care unit (ICU) settings.
+The evaluation is conducted in accordance with MDR 2017/745, Annex XIV and MEDDEV 2.7/1 rev 4.
+
+2. DEVICE DESCRIPTION
+Device Name: CardioTrack 3000
+Model: CT3000-EU
+Device Classification: Class IIb, Rule 10 (MDR 2017/745)
+Intended Purpose: Continuous cardiac monitoring for adult patients in ICU settings,
+providing real-time ECG, heart rate, and arrhythmia detection alerts.
+
+3. REGULATORY FRAMEWORK
+Regulatory Framework: MDR 2017/745 (EU)
+This evaluation follows the requirements of MDR 2017/745 Annex XIV Part A and MEDDEV 2.7/1 rev 4.
+
+4. EVALUATION SCOPE
+Scope: Full clinical evaluation per MEDDEV 2.7/1 rev 4 and MDR Annex XIV
+The evaluation encompasses clinical performance, safety, and the benefit-risk profile.
+
+5. LITERATURE SEARCH STRATEGY
+Literature search: PubMed, Embase, Cochrane (2014-2024)
+Search terms: cardiac monitoring, ICU telemetry, arrhythmia detection, continuous ECG.
+Date range: January 2014 to March 2024.
+
+6. INCLUSION CRITERIA
+Inclusion criteria: RCTs and prospective cohort studies, at least 50 subjects, cardiac monitoring endpoint.
+Studies must report sensitivity/specificity of arrhythmia detection.
+
+7. CLINICAL DATA SOURCES
+Clinical data sources: published literature, PMS data, clinical investigation CIP-CT3000-01
+Post-market surveillance data from CardioTrack 2000 (predicate device) will also be included.
+
+8. NOTES
+This document requires completion of: exclusion criteria, equivalence device details,
+benefit-risk assessment summary, and formal conclusions before submission.
+""".strip()
+
+@app.post("/api/demo/load-sample")
+def load_sample():
+    sha256 = hashlib.sha256(SAMPLE_CEP_TEXT.encode()).hexdigest()
+    db = load_db()
+    for doc_id,doc in db["documents"].items():
+        if doc.get("sha256")==sha256:
+            return {"doc_id":doc_id,"deduplicated":True}
+    doc_id = str(uuid.uuid4())
+    saved  = UPLOADS/f"{doc_id}.txt"
+    saved.write_text(SAMPLE_CEP_TEXT)
+    doc_type = "clinical_evaluation_protocol"
+    extracted = {
+        "document_title":    {"value":"Clinical Evaluation Protocol - CardioTrack 3000","confidence":1.0,"source":"sample_data","evidence":"Document Title: Clinical Evaluation Protocol - CardioTrack 3000","section":"Preamble"},
+        "document_number":   {"value":"CEP-CT3000-001","confidence":1.0,"source":"sample_data","evidence":"Document No.: CEP-CT3000-001","section":"Preamble"},
+        "version":           {"value":"1.0","confidence":1.0,"source":"sample_data","evidence":"Version: 1.0","section":"Preamble"},
+        "date":              {"value":"2024-03-15","confidence":1.0,"source":"sample_data","evidence":"Date: 2024-03-15","section":"Preamble"},
+        "device_name":       {"value":"CardioTrack 3000","confidence":1.0,"source":"sample_data","evidence":"Device Name: CardioTrack 3000","section":"DEVICE DESCRIPTION"},
+        "device_model":      {"value":"CT3000-EU","confidence":1.0,"source":"sample_data","evidence":"Model: CT3000-EU","section":"DEVICE DESCRIPTION"},
+        "manufacturer_name": {"value":"MedTech Solutions GmbH","confidence":1.0,"source":"sample_data","evidence":"Manufacturer: MedTech Solutions GmbH","section":"Preamble"},
+        "regulatory_framework": {"value":"MDR 2017/745 (EU)","confidence":1.0,"source":"sample_data","evidence":"Regulatory Framework: MDR 2017/745","section":"REGULATORY FRAMEWORK"},
+        "author":            {"value":"Dr. Sarah Chen","confidence":1.0,"source":"sample_data","evidence":"Prepared by: Dr. Sarah Chen","section":"Preamble"},
+        "intended_purpose":  {"value":"Continuous cardiac monitoring for adult patients in ICU settings","confidence":0.9,"source":"sample_data","evidence":"Intended Purpose: Continuous cardiac monitoring...","section":"DEVICE DESCRIPTION"},
+        "evaluation_scope":  {"value":"Full clinical evaluation per MEDDEV 2.7/1 rev 4 and MDR Annex XIV","confidence":0.9,"source":"sample_data","evidence":"Scope: Full clinical evaluation...","section":"EVALUATION SCOPE"},
+        "literature_search_strategy": {"value":"Systematic search of PubMed, Embase, Cochrane (2014-2024)","confidence":0.9,"source":"sample_data","evidence":"Literature search: PubMed, Embase, Cochrane","section":"LITERATURE SEARCH STRATEGY"},
+        "inclusion_criteria": {"value":"RCTs and prospective cohort studies, >=50 subjects, cardiac monitoring endpoint","confidence":0.9,"source":"sample_data","evidence":"Inclusion criteria: RCTs and prospective cohort studies","section":"INCLUSION CRITERIA"},
+        "clinical_data_sources": {"value":"Published literature, PMS data, clinical investigation CIP-CT3000-01","confidence":0.9,"source":"sample_data","evidence":"Clinical data sources: published literature...","section":"CLINICAL DATA SOURCES"},
+        "device_classification": {"value":"Class IIb, Rule 10 (MDR 2017/745)","confidence":0.9,"source":"sample_data","evidence":"Device Classification: Class IIb, Rule 10","section":"DEVICE DESCRIPTION"},
+    }
+    _, section_summary = section_aware_extract(SAMPLE_CEP_TEXT, doc_type)
+    completeness = compute_completeness(doc_type, extracted)
+    suggestions  = generate_suggestions(doc_id, doc_type, extracted, SAMPLE_CEP_TEXT)
+    doc_node = {
+        "doc_id":doc_id,"filename":"Sample_CEP_CardiacMonitor_v1.txt","sha256":sha256,
+        "doc_type":doc_type,"uploaded_at":datetime.datetime.utcnow().isoformat(),
+        "status":"extracted","text_length":len(SAMPLE_CEP_TEXT),
+        "completeness":completeness,"suggestions":suggestions,
+        "section_summary": section_summary
+    }
+    db["documents"][doc_id] = doc_node
+    for field_name,field_data in extracted.items():
+        elem_id = str(uuid.uuid4())
+        db["elements"][elem_id] = {
+            "elem_id":elem_id,"doc_id":doc_id,"field":field_name,
+            "value":field_data["value"],"confidence":field_data["confidence"],
+            "source":field_data["source"],"evidence":field_data["evidence"],
+            "section": field_data.get("section", "Document-wide"),
+            "edited":False,"edited_at":None
+        }
+        db["relationships"].append({"from":doc_id,"to":elem_id,"type":"has_field"})
+        if field_name not in db["schema_registry"]:
+            db["schema_registry"][field_name] = {"type":"string","docs_seen_in":[],"required_in":[]}
+        db["schema_registry"][field_name]["docs_seen_in"].append(doc_id)
+    rebuild_doc_element_relationships(db, doc_id, doc_type)
+    save_db(db)
+    audit("sample_loaded",{"doc_id":doc_id})
+    return {"doc_id":doc_id,"deduplicated":False}
+
+
+============================================================
+FILE: backend/meddoc/__init__.py
+============================================================
+"""MedDoc modular backend components."""
+
+
+
+============================================================
+FILE: backend/meddoc/models.py
+============================================================
+from __future__ import annotations
+
+from typing import List, Optional
+
+from pydantic import BaseModel
+
+
+class FieldEdit(BaseModel):
+    elem_id: str
+    new_value: str
+
+
+class SuggestionAction(BaseModel):
+    action: str
+    edited_value: Optional[str] = None
+
+
+class ReprocessRequest(BaseModel):
+    preserve_manual_edits: bool = True
+    force_doc_type: Optional[str] = None
+
+
+class TemplateIngestRequest(BaseModel):
+    filenames: Optional[List[str]] = None
+
+
+
+============================================================
+FILE: backend/meddoc/storage.py
+============================================================
+from __future__ import annotations
+
+import datetime
+import json
+from pathlib import Path
+
+# ── paths ─────────────────────────────────────────────────────────────────────
+BASE = Path(__file__).resolve().parents[1]
+UPLOADS = BASE / "uploads"
+OUTPUTS = BASE / "outputs"
+LOGS = BASE / "logs"
+ONTOLOGY_DIR = BASE / "ontology_data"
+DB_PATH = ONTOLOGY_DIR / "ontology_db.json"
+AUDIT = LOGS / "audit.jsonl"
+SAMPLE_DOCS = BASE / "sample_docs"
+OUTPUTDOCS = BASE / "outputdocs"
+
+for p in (UPLOADS, OUTPUTS, LOGS, ONTOLOGY_DIR, SAMPLE_DOCS):
+    p.mkdir(exist_ok=True)
+
+
+EMPTY_DB = {
+    "version": 1,
+    "documents": {},
+    "elements": {},
+    "relationships": [],
+    "schema_registry": {},
+    "templates": {},
+}
+
+
+def ensure_db_shape(db: dict) -> dict:
+    db.setdefault("version", 1)
+    db.setdefault("documents", {})
+    db.setdefault("elements", {})
+    db.setdefault("relationships", [])
+    db.setdefault("schema_registry", {})
+    db.setdefault("templates", {})
+    return db
+
+
+def load_db() -> dict:
+    if DB_PATH.exists():
+        return ensure_db_shape(json.loads(DB_PATH.read_text()))
+    return ensure_db_shape(json.loads(json.dumps(EMPTY_DB)))
+
+
+def save_db(db: dict):
+    DB_PATH.write_text(json.dumps(db, indent=2, default=str))
+
+
+def audit(event: str, payload: dict):
+    entry = {"ts": datetime.datetime.utcnow().isoformat(), "event": event, **payload}
+    with open(AUDIT, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+
+============================================================
+FILE: backend/meddoc/schemas.py
+============================================================
+from __future__ import annotations
+
+DOC_TYPES = {
+    "clinical_evaluation_protocol": {
+        "label": "Clinical Evaluation Protocol",
+        "required_fields": [
+            "document_title", "document_number", "version", "date",
+            "device_name", "device_model", "intended_purpose",
+            "manufacturer_name", "regulatory_framework",
+            "evaluation_scope", "literature_search_strategy",
+            "inclusion_criteria", "exclusion_criteria",
+            "clinical_data_sources", "equivalence_device",
+            "benefit_risk_assessment", "conclusions", "author", "reviewer"
+        ],
+        "optional_fields": [
+            "device_classification", "predicate_device",
+            "post_market_surveillance_ref", "notified_body", "approval_date",
+            "biocompatibility_standard", "biological_endpoints_evaluated",
+            "biocompatibility_assessment", "cytotoxicity_result",
+            "sensitization_result", "irritation_result"
+        ]
+    },
+    "risk_management_report": {
+        "label": "Risk Management Report",
+        "required_fields": [
+            "document_title", "document_number", "version", "date",
+            "device_name", "manufacturer_name", "risk_management_standard",
+            "hazard_identification", "risk_estimation", "risk_evaluation",
+            "risk_control_measures", "residual_risk_assessment",
+            "benefit_risk_ratio", "author", "reviewer"
+        ],
+        "optional_fields": ["fmea_reference", "fault_tree_ref"]
+    },
+    "test_protocol": {
+        "label": "Test Protocol / Study Design",
+        "required_fields": [
+            "document_title", "document_number", "version", "date",
+            "test_objective", "device_name", "test_standard",
+            "sample_size", "acceptance_criteria", "test_environment",
+            "test_procedure", "pass_fail_criteria", "author", "reviewer"
+        ],
+        "optional_fields": ["statistical_method", "deviation_procedure"]
+    },
+    "design_history_file": {
+        "label": "Design History File Entry",
+        "required_fields": [
+            "document_title", "document_number", "version", "date",
+            "device_name", "design_input", "design_output",
+            "design_verification", "design_validation",
+            "design_review_record", "author"
+        ],
+        "optional_fields": ["change_control_ref", "risk_ref"]
+    },
+    "unknown": {
+        "label": "Unknown Document",
+        "required_fields": ["document_title", "document_number", "version", "date"],
+        "optional_fields": []
+    }
+}
+
+SECTION_KEYWORDS = {
+    "document_control": ["document", "title", "version", "revision", "author", "reviewer", "approval", "metadata", "header"],
+    "device_information": ["device", "product", "manufacturer", "model", "description", "classification"],
+    "regulatory_framework": ["regulatory", "framework", "standard", "compliance", "iso", "mdr", "fda"],
+    "evaluation_scope": ["scope", "objective", "purpose", "intended", "evaluation"],
+    "evidence_methodology": ["literature", "search", "method", "criteria", "clinical data", "sources", "dataset"],
+    "risk_assessment": ["risk", "hazard", "fmea", "control", "residual", "benefit"],
+    "conclusion": ["conclusion", "summary", "decision", "recommendation"],
+    "other": []
+}
+
+SECTION_FIELD_HINTS = {
+    "document_control": {"document_title", "document_number", "version", "date", "author", "reviewer"},
+    "device_information": {"device_name", "device_model", "manufacturer_name", "device_classification", "predicate_device"},
+    "regulatory_framework": {"regulatory_framework", "risk_management_standard", "notified_body", "approval_date"},
+    "evaluation_scope": {"intended_purpose", "evaluation_scope", "test_objective", "test_environment"},
+    "evidence_methodology": {
+        "literature_search_strategy", "inclusion_criteria", "exclusion_criteria", "clinical_data_sources",
+        "sample_size", "test_standard", "acceptance_criteria", "test_procedure", "pass_fail_criteria",
+        "biocompatibility_standard", "biological_endpoints_evaluated",
+        "cytotoxicity_result", "sensitization_result", "irritation_result"
+    },
+    "risk_assessment": {
+        "hazard_identification", "risk_estimation", "risk_evaluation", "risk_control_measures",
+        "residual_risk_assessment", "benefit_risk_assessment", "benefit_risk_ratio",
+        "biocompatibility_assessment"
+    },
+    "conclusion": {"conclusions"},
+}
+
+
+============================================================
+FILE: backend/meddoc/chunking.py
+============================================================
+from __future__ import annotations
+
+import re
+from typing import Dict, List, Optional
+
+from .schemas import SECTION_KEYWORDS
+
+
+def normalize_heading(line: str) -> str:
+    out = re.sub(r"^\s*\d+(?:\.\d+)*[\)\.]?\s*", "", line.strip())
+    return out.strip(":- ").strip()
+
+
+def looks_like_heading(line: str) -> bool:
+    s = line.strip()
+    if len(s) < 4 or len(s) > 120:
+        return False
+    if ":" in s and not s.endswith(":"):
+        return False
+    if re.match(r"^\d+(?:\.\d+)*[\)\.]?\s+[A-Z][A-Z0-9 \-_/&]{2,}$", s):
+        return True
+    if re.match(r"^[A-Z][A-Z0-9 \-_/&]{4,}$", s):
+        return True
+    if re.match(r"^[A-Z][A-Za-z0-9 \-_/&]{4,}:$", s):
+        return True
+    return False
+
+
+def classify_section_key(heading: str) -> str:
+    h = heading.lower()
+    best = ("other", 0)
+    for key, tokens in SECTION_KEYWORDS.items():
+        score = sum(1 for t in tokens if t in h)
+        if score > best[1]:
+            best = (key, score)
+    return best[0]
+
+
+def extract_sections(text: str) -> List[Dict[str, str]]:
+    lines = text.splitlines()
+    sections: List[Dict[str, str]] = []
+    current = {"heading": "Preamble", "section_key": "document_control", "lines": []}
+    for raw in lines:
+        line = raw.rstrip("\n")
+        if looks_like_heading(line):
+            if current["lines"]:
+                body = "\n".join(current["lines"]).strip()
+                if body:
+                    sections.append({
+                        "heading": current["heading"],
+                        "section_key": current["section_key"],
+                        "text": body
+                    })
+            heading = normalize_heading(line)
+            current = {"heading": heading or "Untitled", "section_key": classify_section_key(heading), "lines": []}
+            continue
+        current["lines"].append(line)
+    if current["lines"]:
+        body = "\n".join(current["lines"]).strip()
+        if body:
+            sections.append({
+                "heading": current["heading"],
+                "section_key": current["section_key"],
+                "text": body
+            })
+    return sections[:40]
+
+
+def chunk_text(
+    text: str,
+    sections: Optional[List[Dict[str, str]]] = None,
+    max_chars: int = 1600
+) -> List[Dict[str, str]]:
+    src_sections = sections if sections is not None else extract_sections(text)
+    chunks: List[Dict[str, str]] = []
+    cidx = 0
+    for sec in src_sections:
+        body = sec.get("text", "")
+        if not body.strip():
+            continue
+        start = 0
+        while start < len(body):
+            part = body[start:start + max_chars]
+            chunks.append({
+                "chunk_id": f"chunk_{cidx}",
+                "heading": sec.get("heading", "Untitled"),
+                "section_key": sec.get("section_key", "other"),
+                "text": part.strip()
+            })
+            cidx += 1
+            start += max_chars
+    return chunks
+
+
+
+============================================================
+FILE: backend/meddoc/rag.py
+============================================================
+from __future__ import annotations
+
+import math
+import re
+from collections import Counter
+from typing import Dict, List, Set
+
+from .schemas import SECTION_FIELD_HINTS
+
+
+TOKEN_RE = re.compile(r"[a-z0-9_]+")
+
+
+def tokenize(text: str) -> List[str]:
+    return TOKEN_RE.findall((text or "").lower())
+
+
+def bow_vector(text: str) -> Counter:
+    return Counter(tokenize(text))
+
+
+def cosine(a: Counter, b: Counter) -> float:
+    if not a or not b:
+        return 0.0
+    common = set(a.keys()) & set(b.keys())
+    dot = sum(a[k] * b[k] for k in common)
+    na = math.sqrt(sum(v * v for v in a.values()))
+    nb = math.sqrt(sum(v * v for v in b.values()))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def field_query(field: str) -> str:
+    terms = [field.replace("_", " ")]
+    synonyms = {
+        "cytotoxicity": ["cytotoxicity", "in vitro cytotoxicity", "iso 10993-5"],
+        "irritation": ["irritation", "intracutaneous reactivity", "iso 10993-10"],
+        "sensitization": ["sensitization", "skin sensitization", "iso 10993-10"],
+        "biocompatibility": ["biocompatibility", "biological evaluation", "iso 10993-1"],
+        "biological_endpoints": ["biological endpoints", "endpoints evaluated", "biological evaluation plan"],
+        "standard": ["iso 10993", "iso 10993-1", "iso 10993-5", "iso 10993-10"],
+    }
+    for key, vals in synonyms.items():
+        if key in field:
+            terms.extend(vals)
+    return " ".join(terms)
+
+
+def hinted_section_keys_for_field(field: str) -> Set[str]:
+    keys: Set[str] = set()
+    for skey, fields in SECTION_FIELD_HINTS.items():
+        if field in fields:
+            keys.add(skey)
+    if not keys:
+        keys.add("other")
+    return keys
+
+
+def retrieve_relevant_chunks(
+    field: str,
+    chunks: List[Dict[str, str]],
+    k: int = 4
+) -> List[Dict[str, str]]:
+    q = bow_vector(field_query(field))
+    hinted = hinted_section_keys_for_field(field)
+    scored = []
+    for ch in chunks:
+        c = bow_vector(ch.get("text", ""))
+        score = cosine(q, c)
+        if ch.get("section_key") in hinted:
+            score += 0.05
+        scored.append((score, ch))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = [c for s, c in scored if s > 0][:k]
+    if top:
+        return top
+    return [c for _, c in scored[:k]]
+
+
+============================================================
+FILE: backend/meddoc/pipeline.py
+============================================================
+from __future__ import annotations
+
+from typing import Callable, Dict, List, Optional, Set, Tuple
+
+from .chunking import extract_sections, chunk_text
+from .rag import retrieve_relevant_chunks
+from .schemas import SECTION_FIELD_HINTS
+
+
+ExtractFn = Callable[[str, str, List[str], str, str], Dict[str, Dict]]
+HeuristicFn = Callable[[str, str, Optional[Set[str]], str, str], Dict[str, Dict]]
+
+
+def merge_extracted_values(base: Dict[str, Dict], incoming: Dict[str, Dict]) -> Dict[str, Dict]:
+    for field, cand in incoming.items():
+        if field not in base:
+            base[field] = cand
+            continue
+        current = base[field]
+        cur_val = str(current.get("value", "")).strip()
+        new_val = str(cand.get("value", "")).strip()
+        if not cur_val and new_val:
+            base[field] = cand
+            continue
+        if new_val and float(cand.get("confidence", 0.0)) > float(current.get("confidence", 0.0)):
+            base[field] = cand
+    return base
+
+
+def build_section_summary(
+    sections: List[Dict[str, str]],
+    required_fields: List[str],
+    extracted: Dict[str, Dict]
+) -> List[Dict[str, object]]:
+    section_map: Dict[str, Dict[str, object]] = {}
+    heading_to_key: Dict[str, str] = {}
+    for sec in sections:
+        heading_to_key[sec["heading"]] = sec["section_key"]
+        section_map[sec["heading"]] = {
+            "heading": sec["heading"],
+            "section_key": sec["section_key"],
+            "required_present": 0,
+            "required_total": 0,
+            "fields_present": [],
+            "expected_required_fields": [],
+            "misaligned_required_fields": [],
+        }
+    expected_section_by_field: Dict[str, str] = {}
+    for field in required_fields:
+        section_key = next((k for k, vals in SECTION_FIELD_HINTS.items() if field in vals), "other")
+        expected_section_by_field[field] = section_key
+        candidate_sections = [s for s in sections if s["section_key"] == section_key]
+        target_heading = candidate_sections[0]["heading"] if candidate_sections else "Preamble"
+        section_map.setdefault(target_heading, {
+            "heading": target_heading, "section_key": section_key,
+            "required_present": 0, "required_total": 0,
+            "fields_present": [], "expected_required_fields": [], "misaligned_required_fields": []
+        })
+        section_map[target_heading]["required_total"] += 1
+        section_map[target_heading]["expected_required_fields"].append(field)
+        if field in extracted and str(extracted[field].get("value", "")).strip():
+            section_map[target_heading]["required_present"] += 1
+
+    for field, data in extracted.items():
+        if not str(data.get("value", "")).strip():
+            continue
+        observed_heading = str(data.get("section", "Document-wide")) or "Document-wide"
+        observed_key = heading_to_key.get(observed_heading, "other")
+        section_map.setdefault(observed_heading, {
+            "heading": observed_heading, "section_key": observed_key,
+            "required_present": 0, "required_total": 0,
+            "fields_present": [], "expected_required_fields": [], "misaligned_required_fields": []
+        })
+        section_map[observed_heading]["fields_present"].append(field)
+        if field in expected_section_by_field and observed_key != expected_section_by_field[field]:
+            section_map[observed_heading]["misaligned_required_fields"].append(field)
+
+    out = []
+    for item in section_map.values():
+        total = int(item["required_total"])
+        present = int(item["required_present"])
+        pct = round((present / total) * 100, 1) if total else 0.0
+        out.append({**item, "completeness_pct": pct})
+    out.sort(key=lambda x: (x["required_total"] == 0, x["heading"]))
+    return out
+
+
+def section_aware_extract_rag(
+    text: str,
+    doc_type: str,
+    all_fields: List[str],
+    required_fields: List[str],
+    use_groq: bool,
+    groq_extract_fields: ExtractFn,
+    heuristic_extract: HeuristicFn,
+) -> Tuple[Dict[str, Dict], List[Dict[str, object]]]:
+    sections = extract_sections(text)
+    chunks = chunk_text(text, sections=sections)
+    extracted: Dict[str, Dict] = {}
+
+    required_set = set(required_fields)
+    field_priority = sorted(all_fields, key=lambda f: (f not in required_set, f))
+    max_rag_llm_calls = 10
+    rag_llm_calls = 0
+
+    if use_groq and text.strip():
+        extracted = merge_extracted_values(
+            extracted,
+            groq_extract_fields(text, doc_type, all_fields, "groq_llm", "Document-wide")
+        )
+        extracted = merge_extracted_values(
+            extracted,
+            heuristic_extract(text, doc_type, set(all_fields), "heuristic_regex", "Document-wide")
+        )
+        for field in field_priority:
+            if field in extracted:
+                continue
+            if rag_llm_calls >= max_rag_llm_calls:
+                break
+            rel_chunks = retrieve_relevant_chunks(field, chunks, k=3)
+            if not rel_chunks:
+                continue
+            context = "\n\n".join(
+                f"[{c.get('heading','')}] {c.get('text','')}" for c in rel_chunks if c.get("text")
+            )
+            llm_hit = groq_extract_fields(context, doc_type, [field], "groq_rag", rel_chunks[0].get("heading", "RAG"))
+            rag_llm_calls += 1
+            extracted = merge_extracted_values(extracted, llm_hit)
+            if field not in extracted:
+                h = heuristic_extract(context, doc_type, {field}, "heuristic_rag", rel_chunks[0].get("heading", "RAG"))
+                extracted = merge_extracted_values(extracted, h)
+    else:
+        extracted = merge_extracted_values(
+            extracted,
+            heuristic_extract(text, doc_type, set(all_fields), "heuristic_regex", "Document-wide")
+        )
+        for field in field_priority:
+            if field in extracted:
+                continue
+            rel_chunks = retrieve_relevant_chunks(field, chunks, k=3)
+            if not rel_chunks:
+                continue
+            context = "\n\n".join(
+                f"[{c.get('heading','')}] {c.get('text','')}" for c in rel_chunks if c.get("text")
+            )
+            h = heuristic_extract(context, doc_type, {field}, "heuristic_rag", rel_chunks[0].get("heading", "RAG"))
+            extracted = merge_extracted_values(extracted, h)
+
+    section_summary = build_section_summary(sections, required_fields, extracted)
+    return extracted, section_summary
+
+
+============================================================
+FILE: backend/meddoc/routes/__init__.py
+============================================================
+"""API router modules."""
+
+
+
+============================================================
+FILE: backend/meddoc/routes/system.py
+============================================================
+from __future__ import annotations
+
+from fastapi import APIRouter
+
+router = APIRouter()
+
+
+@router.get("/api/health")
+def health():
+    import app as core
+
+    return {
+        "status": "ok",
+        "groq_available": bool(core.get_groq()),
+        "pdf_available": core.PDF_OK,
+        "docx_available": core.DOCX_OK,
+    }
+
+
+
+============================================================
+FILE: backend/meddoc/routes/meta.py
+============================================================
+from __future__ import annotations
+
+import json
+from typing import Optional
+
+from fastapi import APIRouter
+
+from meddoc.models import TemplateIngestRequest
+from meddoc.storage import AUDIT, load_db
+
+router = APIRouter()
+
+
+@router.get("/api/package/completeness")
+def package_completeness():
+    import app as core
+
+    db = load_db()
+    return core.package_completeness_summary(db)
+
+
+@router.get("/api/audit")
+def get_audit(limit: int = 100):
+    if not AUDIT.exists():
+        return {"events": []}
+    lines = AUDIT.read_text().strip().split("\n")
+    events = []
+    for line in lines[-limit:]:
+        try:
+            events.append(json.loads(line))
+        except Exception:
+            pass
+    return {"events": list(reversed(events))}
+
+
+@router.get("/api/schema")
+def get_schema():
+    import app as core
+
+    db = load_db()
+    return {
+        "schema_registry": db["schema_registry"],
+        "doc_types": list(core.DOC_TYPES.keys()),
+        "template_count": len(db.get("templates", {})),
+        "effective_doc_schemas": {dt: core.effective_schema(db, dt) for dt in core.DOC_TYPES.keys()},
+        "section_taxonomy": core.SECTION_KEYWORDS,
+    }
+
+
+@router.get("/api/templates")
+def list_templates():
+    db = load_db()
+    templates = sorted(db.get("templates", {}).values(), key=lambda x: x.get("ingested_at", ""), reverse=True)
+    return {"templates": templates, "count": len(templates)}
+
+
+@router.post("/api/templates/ingest")
+def ingest_templates(body: Optional[TemplateIngestRequest] = None):
+    import app as core
+
+    filenames = body.filenames if body else None
+    result = core.ingest_templates_into_ontology(filenames=filenames)
+    return result
+
+
+
+============================================================
+FILE: frontend/package.json
+============================================================
+{
+  "name": "meddoc-intake-ui",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-scripts": "5.0.1",
+    "axios": "^1.7.2",
+    "lucide-react": "^0.395.0"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build"
+  },
+  "proxy": "http://backend:8000",
+  "browserslist": {
+    "production": [">0.2%", "not dead", "not op_mini all"],
+    "development": ["last 1 chrome version", "last 1 firefox version"]
+  }
+}
+
+
+============================================================
+FILE: frontend/public/index.html
+============================================================
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MedDoc Intake POC</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+
+
+============================================================
+FILE: frontend/src/index.js
+============================================================
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import './index.css';
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+
+
+============================================================
+FILE: frontend/src/index.css
+============================================================
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #0d0f14;
+  --surface:   #13161e;
+  --surface2:  #1a1e28;
+  --border:    #252a38;
+  --border2:   #2e3547;
+  --text:      #e2e6f0;
+  --muted:     #6b7590;
+  --accent:    #4f8fff;
+  --accent2:   #2563eb;
+  --green:     #22c55e;
+  --amber:     #f59e0b;
+  --red:       #ef4444;
+  --purple:    #a78bfa;
+  --cyan:      #22d3ee;
+  --mono:      'IBM Plex Mono', monospace;
+  --sans:      'IBM Plex Sans', sans-serif;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--surface); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+button { font-family: var(--sans); cursor: pointer; }
+input, textarea { font-family: var(--sans); }
+
+
+============================================================
+FILE: frontend/src/App.css
+============================================================
+/* ── Layout ─────────────────────────────────────────────────────────────────── */
+.app {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 360px;
+  min-width: 320px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.main {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--bg);
+}
+
+/* ── Sidebar header ─────────────────────────────────────────────────────────── */
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.logo-mark {
+  width: 32px; height: 32px;
+  background: var(--accent);
+  border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 16px; color: #fff;
+  font-family: var(--mono);
+}
+
+/* ── Upload zone ────────────────────────────────────────────────────────────── */
+.upload-zone {
+  margin: 12px;
+  border: 1.5px dashed var(--border2);
+  border-radius: 8px;
+  padding: 20px 12px;
+  display: flex; flex-direction: column; align-items: center;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+  flex-shrink: 0;
+}
+.upload-zone.drag,
+.upload-zone:hover { border-color: var(--accent); background: #4f8fff08; }
+
+/* ── Buttons ────────────────────────────────────────────────────────────────── */
+.btn-primary {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 6px; border: none;
+  background: var(--accent); color: #fff; font-size: 13px; font-weight: 500;
+  transition: background .15s, opacity .15s;
+}
+.btn-primary:hover:not(:disabled) { background: var(--accent2); }
+.btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+
+.btn-secondary {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;
+  background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border2); cursor: pointer;
+  transition: border-color .15s;
+  text-decoration: none;
+}
+.btn-secondary:hover { border-color: var(--accent); }
+
+.btn-sample {
+  margin: 0 12px 8px;
+  display: flex; align-items: center; gap: 6px; justify-content: center;
+  padding: 8px; border-radius: 6px; border: 1px solid var(--border2);
+  background: transparent; color: var(--muted); font-size: 12px;
+  cursor: pointer; transition: .15s;
+}
+.btn-sample:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.btn-sample:disabled { opacity:.4; cursor:not-allowed; }
+
+.btn-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 5px; border: 1px solid var(--border2);
+  background: var(--surface2); color: var(--muted); cursor: pointer;
+  transition: .15s; flex-shrink: 0;
+}
+.btn-icon:hover { color: var(--text); border-color: var(--accent); }
+.btn-icon.green:hover { color: var(--green); border-color: var(--green); }
+.btn-icon.red:hover { color: var(--red); border-color: var(--red); }
+
+.btn-sm {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 5px 10px; border-radius: 5px; border: 1px solid;
+  font-size: 11px; font-weight: 600; cursor: pointer; transition: .15s;
+}
+.btn-sm.green { color: var(--green); border-color: var(--green)40; background: var(--green)10; }
+.btn-sm.green:hover { background: var(--green)20; }
+.btn-sm.amber { color: var(--amber); border-color: var(--amber)40; background: var(--amber)10; }
+.btn-sm.amber:hover { background: var(--amber)20; }
+.btn-sm.red   { color: var(--red);   border-color: var(--red)40;   background: var(--red)10;   }
+.btn-sm.red:hover   { background: var(--red)20; }
+.btn-sm.muted { color: var(--muted); border-color: var(--border2); background: var(--surface2); }
+
+/* ── Package summary ─────────────────────────────────────────────────────────── */
+.pkg-summary {
+  margin: 0 12px 8px;
+  padding: 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+/* ── Doc list ────────────────────────────────────────────────────────────────── */
+.doc-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px;
+}
+
+.doc-card {
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.doc-card:hover { border-color: var(--border2); background: var(--surface2); }
+.doc-card.selected { border-color: var(--accent); background: #4f8fff0a; }
+
+/* ── Doc detail ──────────────────────────────────────────────────────────────── */
+.doc-detail {
+  display: flex; flex-direction: column;
+  min-height: 100vh;
+}
+
+.detail-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  background: var(--surface);
+  position: sticky; top: 0; z-index: 10;
+}
+
+.completeness-strip {
+  padding: 16px 24px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 20px;
+}
+
+/* ── Tabs ────────────────────────────────────────────────────────────────────── */
+.tabs {
+  display: flex; gap: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  padding: 0 24px;
+  flex-shrink: 0;
+}
+
+.tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 12px 16px;
+  border: none; background: transparent;
+  color: var(--muted); font-size: 13px;
+  cursor: pointer; transition: .15s;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.tab-badge {
+  background: var(--amber); color: #000;
+  border-radius: 99px; padding: 1px 6px;
+  font-size: 10px; font-weight: 700;
+}
+
+.tab-content {
+  padding: 20px 24px;
+  flex: 1;
+}
+
+/* ── Field row ───────────────────────────────────────────────────────────────── */
+.field-row {
+  padding: 12px 14px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  margin-bottom: 8px;
+  background: var(--surface);
+  transition: border-color .15s;
+}
+.field-row:hover { border-color: var(--border2); }
+
+.field-input {
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 13px;
+  resize: vertical;
+  outline: none;
+  width: 100%;
+}
+
+.evidence-box {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #22d3ee08;
+  border: 1px solid #22d3ee20;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ── Suggestion card ─────────────────────────────────────────────────────────── */
+.suggestion-card {
+  padding: 14px;
+  border-radius: 8px;
+  border: 1px solid var(--amber)30;
+  background: var(--amber)05;
+  margin-bottom: 10px;
+}
+
+/* ── Missing row ─────────────────────────────────────────────────────────────── */
+.missing-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--red)20;
+  background: var(--red)05;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+/* ── Trace ───────────────────────────────────────────────────────────────────── */
+.trace-block { margin-bottom: 20px; }
+.trace-label { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin-bottom: 4px; }
+.trace-value { font-size: 13px; color: var(--text); }
+.trace-value.mono { font-family: var(--mono); font-size: 11px; word-break: break-all; }
+
+.provenance-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+/* ── Audit panel ─────────────────────────────────────────────────────────────── */
+.audit-panel {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+}
+
+.audit-toggle {
+  width: 100%; padding: 10px 14px;
+  display: flex; align-items: center; gap: 8px;
+  background: transparent; border: none;
+  color: var(--muted); font-size: 12px; cursor: pointer;
+  transition: .15s;
+}
+.audit-toggle:hover { color: var(--text); }
+
+.audit-list {
+  max-height: 180px; overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.audit-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.audit-row:hover { background: var(--surface2); }
+
+/* ── Welcome ─────────────────────────────────────────────────────────────────── */
+.welcome {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%; min-height: 100vh;
+}
+.welcome-inner {
+  text-align: center; max-width: 420px; padding: 40px;
+}
+.welcome-inner h2 {
+  font-size: 22px; font-weight: 600; margin: 16px 0 10px;
+  color: var(--text);
+}
+.welcome-inner p {
+  color: var(--muted); font-size: 14px; line-height: 1.7; margin-bottom: 16px;
+}
+
+/* ── Empty state ─────────────────────────────────────────────────────────────── */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 10px;
+  padding: 40px; color: var(--muted); font-size: 13px;
+}
+
+/* ── Spin animation ──────────────────────────────────────────────────────────── */
+.spin { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+
+============================================================
+FILE: frontend/src/App.js
+============================================================
+import React, { useState, useEffect, useCallback } from 'react';
+import axios from 'axios';
+import {
+  Upload, FileText, CheckCircle, AlertCircle, Clock, ChevronRight,
+  Download, RefreshCw, Eye, Edit3, X, Check, Sparkles, Activity,
+  Database, Shield, BarChart2, List, Layers
+} from 'lucide-react';
+import './App.css';
+
+const API = process.env.REACT_APP_API_URL || '';
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+const api = axios.create({ baseURL: API });
+
+function pct(v) { return Math.round(v); }
+
+function confColor(c) {
+  if (c >= 0.9) return 'var(--green)';
+  if (c >= 0.7) return 'var(--amber)';
+  return 'var(--red)';
+}
+
+function sourceLabel(s) {
+  const m = {
+    groq_llm:'Groq LLM', groq_llm_section:'Groq Section', groq_rag:'Groq RAG',
+    heuristic_regex:'Regex', heuristic_section:'Section Regex', heuristic_rag:'RAG Regex',
+    sample_data:'Sample', groq_suggestion:'Groq', heuristic_default:'Default', suggestion_accept:'Accepted', suggestion_edit:'Edited'
+  };
+  return m[s] || s;
+}
+
+function docTypeLabel(t) {
+  const m = { clinical_evaluation_protocol:'Clinical Evaluation Protocol', risk_management_report:'Risk Management Report', test_protocol:'Test Protocol', design_history_file:'Design History File', unknown:'Unknown' };
+  return m[t] || t;
+}
+
+const FIELD_LABELS = {
+  document_title:'Document Title', document_number:'Document Number', version:'Version',
+  date:'Date', device_name:'Device Name', device_model:'Device Model',
+  intended_purpose:'Intended Purpose', manufacturer_name:'Manufacturer',
+  regulatory_framework:'Regulatory Framework', evaluation_scope:'Evaluation Scope',
+  literature_search_strategy:'Literature Search Strategy', inclusion_criteria:'Inclusion Criteria',
+  exclusion_criteria:'Exclusion Criteria', clinical_data_sources:'Clinical Data Sources',
+  equivalence_device:'Equivalence Device', benefit_risk_assessment:'Benefit-Risk Assessment',
+  conclusions:'Conclusions', author:'Author', reviewer:'Reviewer',
+  device_classification:'Device Classification', predicate_device:'Predicate Device',
+  post_market_surveillance_ref:'PMS Reference', notified_body:'Notified Body',
+  approval_date:'Approval Date',
+  biocompatibility_standard:'Biocompatibility Standard',
+  biological_endpoints_evaluated:'Biological Endpoints Evaluated',
+  biocompatibility_assessment:'Biocompatibility Assessment',
+  cytotoxicity_result:'Cytotoxicity Result',
+  sensitization_result:'Sensitization Result',
+  irritation_result:'Irritation Result',
+};
+
+// ── Ring chart ─────────────────────────────────────────────────────────────────
+function RingChart({ value, size = 80, stroke = 8, color = 'var(--accent)' }) {
+  const r = (size - stroke) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ - (value / 100) * circ;
+  return (
+    <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--border2)" strokeWidth={stroke} />
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color}
+        strokeWidth={stroke} strokeDasharray={circ} strokeDashoffset={offset}
+        strokeLinecap="round" style={{ transition: 'stroke-dashoffset .6s ease' }} />
+      <text x="50%" y="50%" textAnchor="middle" dominantBaseline="central"
+        fill="var(--text)" fontSize={size * 0.22} fontFamily="var(--mono)"
+        style={{ transform: 'rotate(90deg)', transformOrigin: 'center' }}>
+        {pct(value)}%
+      </text>
+    </svg>
+  );
+}
+
+// ── Progress bar ───────────────────────────────────────────────────────────────
+function ProgressBar({ value, color = 'var(--accent)', height = 6 }) {
+  return (
+    <div style={{ background: 'var(--border)', borderRadius: 999, height, overflow: 'hidden' }}>
+      <div style={{
+        width: `${value}%`, height: '100%', background: color,
+        borderRadius: 999, transition: 'width .5s ease'
+      }} />
+    </div>
+  );
+}
+
+// ── Badge ─────────────────────────────────────────────────────────────────────
+function Badge({ children, color = 'var(--accent)', bg }) {
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px',
+      borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono)', fontWeight: 500,
+      color, background: bg || `${color}18`, border: `1px solid ${color}30`
+    }}>{children}</span>
+  );
+}
+
+// ── UploadZone ─────────────────────────────────────────────────────────────────
+function UploadZone({ onUploaded, loading, setLoading }) {
+  const [drag, setDrag] = useState(false);
+
+  const handleFiles = useCallback(async (files) => {
+    if (!files.length) return;
+    setLoading(true);
+    for (const file of files) {
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        await api.post('/api/documents/upload', fd);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    setLoading(false);
+    onUploaded();
+  }, [onUploaded, setLoading]);
+
+  return (
+    <div className={`upload-zone ${drag ? 'drag' : ''}`}
+      onDragOver={e => { e.preventDefault(); setDrag(true); }}
+      onDragLeave={() => setDrag(false)}
+      onDrop={e => { e.preventDefault(); setDrag(false); handleFiles([...e.dataTransfer.files]); }}>
+      <Upload size={28} strokeWidth={1.5} color="var(--muted)" />
+      <span style={{ color: 'var(--muted)', marginTop: 8 }}>Drop PDF, DOCX, or TXT files here</span>
+      <label className="btn-secondary" style={{ marginTop: 12 }}>
+        {loading ? <><RefreshCw size={14} className="spin" /> Processing…</> : 'Browse files'}
+        <input type="file" multiple accept=".pdf,.docx,.txt" style={{ display:'none' }}
+          onChange={e => handleFiles([...e.target.files])} />
+      </label>
+    </div>
+  );
+}
+
+// ── DocCard ────────────────────────────────────────────────────────────────────
+function DocCard({ doc, selected, onClick }) {
+  const c = doc.completeness;
+  const color = c.completeness_pct >= 80 ? 'var(--green)' : c.completeness_pct >= 50 ? 'var(--amber)' : 'var(--red)';
+  return (
+    <div className={`doc-card ${selected ? 'selected' : ''}`} onClick={onClick}>
+      <div style={{ display:'flex', alignItems:'flex-start', gap:12 }}>
+        <FileText size={18} color="var(--accent)" strokeWidth={1.5} style={{ marginTop:2, flexShrink:0 }} />
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontWeight:500, fontSize:13, color:'var(--text)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+            {doc.filename}
+          </div>
+          <div style={{ fontSize:11, color:'var(--muted)', marginTop:2 }}>
+            {docTypeLabel(doc.doc_type)}
+          </div>
+        </div>
+        <RingChart value={c.completeness_pct} size={48} stroke={5} color={color} />
+      </div>
+      <div style={{ marginTop:10 }}>
+        <ProgressBar value={c.completeness_pct} color={color} />
+        <div style={{ display:'flex', justifyContent:'space-between', marginTop:4, fontSize:11, color:'var(--muted)' }}>
+          <span>{c.required_present}/{c.required_total} required fields</span>
+          {doc.suggestions?.filter(s=>s.status==='pending').length > 0 &&
+            <Badge color="var(--amber)">{doc.suggestions.filter(s=>s.status==='pending').length} suggestions</Badge>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── FieldRow ───────────────────────────────────────────────────────────────────
+function FieldRow({ elem, onEdit }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(elem.value);
+  const [showEvidence, setShowEvidence] = useState(false);
+
+  const save = async () => {
+    await onEdit(elem.elem_id, val);
+    setEditing(false);
+  };
+
+  return (
+    <div className="field-row">
+      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+        <span style={{ fontSize:12, fontWeight:600, color:'var(--muted)', textTransform:'uppercase', letterSpacing:.5, minWidth:180 }}>
+          {FIELD_LABELS[elem.field] || elem.field}
+        </span>
+        <Badge color={confColor(elem.confidence)}>{Math.round(elem.confidence*100)}%</Badge>
+        <Badge color="var(--purple)">{sourceLabel(elem.source)}</Badge>
+        {elem.section && <Badge color="var(--accent)">{elem.section}</Badge>}
+        {elem.edited && <Badge color="var(--cyan)">Edited</Badge>}
+      </div>
+      {editing ? (
+        <div style={{ display:'flex', gap:8, alignItems:'flex-start' }}>
+          <textarea className="field-input" value={val}
+            onChange={e => setVal(e.target.value)} rows={2} style={{ flex:1 }} />
+          <button className="btn-icon green" onClick={save}><Check size={14}/></button>
+          <button className="btn-icon red" onClick={() => { setVal(elem.value); setEditing(false); }}><X size={14}/></button>
+        </div>
+      ) : (
+        <div style={{ display:'flex', gap:8, alignItems:'flex-start' }}>
+          <div style={{ flex:1, fontSize:13, color:'var(--text)', lineHeight:1.5, wordBreak:'break-word' }}>{elem.value || <em style={{color:'var(--muted)'}}>—</em>}</div>
+          <button className="btn-icon" onClick={() => setEditing(true)} title="Edit"><Edit3 size={13}/></button>
+          {elem.evidence && <button className="btn-icon" onClick={() => setShowEvidence(!showEvidence)} title="Evidence"><Eye size={13}/></button>}
+        </div>
+      )}
+      {showEvidence && elem.evidence && (
+        <div className="evidence-box">
+          <span style={{ color:'var(--muted)', fontSize:11, fontFamily:'var(--mono)' }}>Evidence: </span>
+          <span style={{ fontSize:12, color:'var(--cyan)', fontFamily:'var(--mono)' }}>…{elem.evidence}…</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── SuggestionCard ─────────────────────────────────────────────────────────────
+function SuggestionCard({ sugg, onAction }) {
+  const [editMode, setEditMode] = useState(false);
+  const [val, setVal] = useState(sugg.suggested_value);
+  const resolved = sugg.status && sugg.status !== 'pending';
+  const statusColor = sugg.status === 'reject' ? 'var(--red)' : sugg.status === 'edit' ? 'var(--cyan)' : 'var(--green)';
+  const statusLabel = sugg.status === 'reject' ? 'Rejected' : sugg.status === 'edit' ? 'Edited' : sugg.status === 'accept' ? 'Accepted' : sugg.status;
+  return (
+    <div className="suggestion-card">
+      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+        <Sparkles size={14} color="var(--amber)" />
+        <span style={{ fontWeight:600, fontSize:12, color:'var(--text)', textTransform:'uppercase', letterSpacing:.5 }}>
+          {FIELD_LABELS[sugg.field] || sugg.field}
+        </span>
+        <Badge color="var(--amber)">{sourceLabel(sugg.source)}</Badge>
+        {resolved && <Badge color={statusColor}>{statusLabel}</Badge>}
+      </div>
+      {editMode ? (
+        <textarea className="field-input" value={val} onChange={e=>setVal(e.target.value)} rows={2} style={{width:'100%',marginBottom:8}} />
+      ) : (
+        <div style={{ fontSize:13, color:'var(--text)', marginBottom:6, lineHeight:1.5 }}>{val}</div>
+      )}
+      <div style={{ fontSize:11, color:'var(--muted)', marginBottom:10, fontStyle:'italic' }}>
+        {sugg.rationale}
+      </div>
+      <div style={{ display:'flex', gap:8 }}>
+        {resolved ? (
+          <button className="btn-sm muted" disabled><Check size={12}/> Actioned</button>
+        ) : (
+          (editMode ? (
+            <>
+              <button className="btn-sm green" onClick={() => { onAction(sugg.id,'edit',val); setEditMode(false); }}>
+                <Check size={12}/> Save & Accept
+              </button>
+              <button className="btn-sm muted" onClick={() => setEditMode(false)}><X size={12}/> Cancel</button>
+            </>
+          ) : (
+            <>
+              <button className="btn-sm green" onClick={() => onAction(sugg.id,'accept')}><Check size={12}/> Accept</button>
+              <button className="btn-sm amber" onClick={() => setEditMode(true)}><Edit3 size={12}/> Edit</button>
+              <button className="btn-sm red" onClick={() => onAction(sugg.id,'reject')}><X size={12}/> Reject</button>
+            </>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── DocDetail ──────────────────────────────────────────────────────────────────
+function DocDetail({ docId, onUpdate }) {
+  const [doc, setDoc] = useState(null);
+  const [schemaInfo, setSchemaInfo] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [generatingDocx, setGeneratingDocx] = useState(false);
+  const [tab, setTab] = useState('fields'); // fields | sections | suggestions | missing | templates | trace
+
+  const load = useCallback(async () => {
+    if (!docId) return;
+    const [docResp, schemaResp] = await Promise.all([
+      api.get(`/api/documents/${docId}`),
+      api.get('/api/schema')
+    ]);
+    setDoc(docResp.data);
+    setSchemaInfo(schemaResp.data);
+  }, [docId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const editField = async (elem_id, new_value) => {
+    await api.patch(`/api/documents/${docId}/fields`, { elem_id, new_value });
+    await load(); onUpdate();
+  };
+
+  const actSuggestion = async (sugg_id, action, edited_value) => {
+    await api.post(`/api/documents/${docId}/suggestions/${sugg_id}`, { action, edited_value });
+    await load(); onUpdate();
+  };
+
+  const generate = async () => {
+    setGenerating(true);
+    await api.post(`/api/documents/${docId}/generate`);
+    await load(); onUpdate();
+    setGenerating(false);
+  };
+
+  const generateDocx = async () => {
+    setGeneratingDocx(true);
+    await api.post(`/api/documents/${docId}/generate-docx`);
+    await load(); onUpdate();
+    setGeneratingDocx(false);
+  };
+
+  if (!doc) return <div className="empty-state"><RefreshCw size={20} className="spin" /></div>;
+
+  const c = doc.completeness;
+  const color = c.completeness_pct >= 80 ? 'var(--green)' : c.completeness_pct >= 50 ? 'var(--amber)' : 'var(--red)';
+  const pendingSuggs = doc.suggestions?.filter(s => s.status==='pending') || [];
+  const resolvedSuggs = doc.suggestions?.filter(s => s.status && s.status !== 'pending') || [];
+  const allFields = doc.elements || [];
+  const elemByField = {};
+  allFields.forEach(e => { elemByField[e.field] = e; });
+  const effectiveSchema = schemaInfo?.effective_doc_schemas?.[doc.doc_type] || null;
+  const templateFields = effectiveSchema?.template_fields || [];
+  const presentTemplateFields = templateFields.filter(f => Boolean(elemByField[f]?.value?.toString().trim()));
+  const missingTemplateFields = templateFields.filter(f => !presentTemplateFields.includes(f));
+  const templateCoverage = templateFields.length ? Math.round((presentTemplateFields.length / templateFields.length) * 100) : 0;
+  const sectionSummary = doc.section_summary || [];
+
+  return (
+    <div className="doc-detail">
+      {/* Header */}
+      <div className="detail-header">
+        <div>
+          <div style={{ fontSize:16, fontWeight:600 }}>{doc.filename}</div>
+          <div style={{ fontSize:12, color:'var(--muted)', marginTop:2 }}>
+            {docTypeLabel(doc.doc_type)} · {new Date(doc.uploaded_at).toLocaleString()}
+          </div>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+          {doc.status === 'output_generated' && (
+            <a className="btn-secondary" href={`${API}/api/documents/${docId}/download`} target="_blank" rel="noreferrer">
+              <Download size={14} /> Download
+            </a>
+          )}
+          <a className="btn-secondary" href={`${API}/api/documents/${docId}/download-docx`} target="_blank" rel="noreferrer">
+            <Download size={14} /> Download DOCX
+          </a>
+          <button className="btn-secondary" onClick={generateDocx} disabled={generatingDocx}>
+            {generatingDocx ? <><RefreshCw size={14} className="spin" /> DOCX…</> : <><FileText size={14}/> Generate DOCX</>}
+          </button>
+          <button className="btn-primary" onClick={generate} disabled={generating}>
+            {generating ? <><RefreshCw size={14} className="spin" /> Generating…</> : <><FileText size={14}/> Generate Output</>}
+          </button>
+        </div>
+      </div>
+
+      {/* Completeness strip */}
+      <div className="completeness-strip">
+        <RingChart value={c.completeness_pct} size={72} stroke={7} color={color} />
+        <div style={{ flex:1 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
+            <span style={{ fontWeight:600 }}>Completeness</span>
+            <span style={{ color:'var(--muted)', fontSize:12 }}>{c.required_present}/{c.required_total} required · {c.optional_present}/{c.optional_total} optional</span>
+          </div>
+          <ProgressBar value={c.completeness_pct} color={color} height={8} />
+          {c.missing_required.length > 0 && (
+            <div style={{ marginTop:8, display:'flex', flexWrap:'wrap', gap:4 }}>
+              {c.missing_required.map(f => (
+                <Badge key={f} color="var(--red)">{FIELD_LABELS[f]||f}</Badge>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="tabs">
+        {[
+          { id:'fields', label:'Fields', icon:<List size={14}/>, count: allFields.length },
+          { id:'sections', label:'Sections', icon:<BarChart2 size={14}/>, count: sectionSummary.length },
+          { id:'suggestions', label:'Suggestions', icon:<Sparkles size={14}/>, count: pendingSuggs.length },
+          { id:'missing', label:'Missing', icon:<AlertCircle size={14}/>, count: c.missing_required.length },
+          { id:'templates', label:'Templates', icon:<Database size={14}/>, count: templateFields.length },
+          { id:'trace', label:'Traceability', icon:<Shield size={14}/> },
+        ].map(t => (
+          <button key={t.id} className={`tab ${tab===t.id?'active':''}`} onClick={() => setTab(t.id)}>
+            {t.icon} {t.label}
+            {t.count > 0 && <span className="tab-badge">{t.count}</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      <div className="tab-content">
+        {tab === 'fields' && (
+          <div>
+            {allFields.length === 0 && <div className="empty-state">No fields extracted yet.</div>}
+            {allFields.map(e => <FieldRow key={e.elem_id} elem={e} onEdit={editField} />)}
+          </div>
+        )}
+
+        {tab === 'sections' && (
+          <div>
+            {sectionSummary.length === 0 && (
+              <div className="empty-state">
+                <BarChart2 size={24} color="var(--muted)" />
+                <span>No section map available for this document.</span>
+              </div>
+            )}
+            {sectionSummary.map(sec => (
+              <div key={sec.heading} className="trace-block">
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <div className="trace-label" style={{ marginBottom: 0 }}>{sec.heading}</div>
+                  <Badge color={sec.completeness_pct >= 70 ? 'var(--green)' : sec.completeness_pct >= 40 ? 'var(--amber)' : 'var(--red)'}>
+                    {Math.round(sec.completeness_pct)}%
+                  </Badge>
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <ProgressBar value={sec.completeness_pct || 0} color={sec.completeness_pct >= 70 ? 'var(--green)' : 'var(--amber)'} />
+                </div>
+                <div style={{ marginTop: 8, display:'flex', gap:8, flexWrap:'wrap' }}>
+                  <Badge color="var(--green)">{sec.required_present || 0} required present</Badge>
+                  <Badge color="var(--red)">{Math.max((sec.required_total || 0) - (sec.required_present || 0), 0)} required missing</Badge>
+                  <Badge color="var(--accent)">{sec.section_key || 'other'}</Badge>
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontSize:11, color:'var(--muted)', textTransform:'uppercase', letterSpacing:.5, marginBottom:6 }}>
+                    Extracted Here
+                  </div>
+                  <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
+                    {(sec.fields_present || []).length === 0 && <Badge color="var(--muted)">None</Badge>}
+                    {(sec.fields_present || []).map(f => (
+                      <Badge key={`${sec.heading}-field-${f}`} color="var(--cyan)">{FIELD_LABELS[f] || f}</Badge>
+                    ))}
+                  </div>
+                </div>
+                {(sec.misaligned_required_fields || []).length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize:11, color:'var(--muted)', textTransform:'uppercase', letterSpacing:.5, marginBottom:6 }}>
+                      Required But In Different Section Pattern
+                    </div>
+                    <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
+                      {(sec.misaligned_required_fields || []).map(f => (
+                        <Badge key={`${sec.heading}-mis-${f}`} color="var(--amber)">{FIELD_LABELS[f] || f}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === 'suggestions' && (
+          <div>
+            {pendingSuggs.length === 0 && (
+              <div className="empty-state">
+                <CheckCircle size={24} color="var(--green)" />
+                <span>All suggestions resolved.</span>
+              </div>
+            )}
+            {pendingSuggs.map(s => (
+              <SuggestionCard key={s.id} sugg={s} onAction={actSuggestion} />
+            ))}
+            {resolvedSuggs.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize:11, color:'var(--muted)', textTransform:'uppercase', letterSpacing:.5, marginBottom:8 }}>
+                  Resolved Suggestions
+                </div>
+                {resolvedSuggs.map(s => (
+                  <SuggestionCard key={s.id} sugg={s} onAction={actSuggestion} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === 'missing' && (
+          <div>
+            {c.missing_required.length === 0 && (
+              <div className="empty-state"><CheckCircle size={24} color="var(--green)" /><span>No missing required fields!</span></div>
+            )}
+            {c.missing_required.map(f => (
+              <div key={f} className="missing-row">
+                <AlertCircle size={14} color="var(--red)" style={{ flexShrink:0 }} />
+                <span style={{ fontWeight:500, color:'var(--text)' }}>{FIELD_LABELS[f]||f}</span>
+                <span style={{ fontSize:11, color:'var(--muted)', marginLeft:'auto' }}>Required — not found</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === 'templates' && (
+          <div>
+            {templateFields.length === 0 && (
+              <div className="empty-state">
+                <Database size={24} color="var(--muted)" />
+                <span>No template-derived fields for this document type yet.</span>
+              </div>
+            )}
+            {templateFields.length > 0 && (
+              <>
+                <div className="trace-block">
+                  <div className="trace-label">Template Coverage</div>
+                  <div style={{ marginTop: 8 }}>
+                    <ProgressBar value={templateCoverage} color={templateCoverage >= 70 ? 'var(--green)' : 'var(--amber)'} height={8} />
+                    <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <Badge color="var(--green)">{presentTemplateFields.length} present</Badge>
+                      <Badge color="var(--red)">{missingTemplateFields.length} missing</Badge>
+                      <Badge color="var(--accent)">{templateCoverage}%</Badge>
+                    </div>
+                  </div>
+                </div>
+                <div className="trace-block">
+                  <div className="trace-label">Missing Template Fields</div>
+                  <div style={{ marginTop: 8, display:'flex', flexWrap:'wrap', gap:4 }}>
+                    {missingTemplateFields.length === 0 && <Badge color="var(--green)">All template fields covered</Badge>}
+                    {missingTemplateFields.map(f => (
+                      <Badge key={f} color="var(--red)">{FIELD_LABELS[f] || f}</Badge>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {tab === 'trace' && (
+          <div>
+            <div className="trace-block">
+              <div className="trace-label">Document SHA-256</div>
+              <div className="trace-value mono">{doc.sha256}</div>
+            </div>
+            <div className="trace-block">
+              <div className="trace-label">Ingested At</div>
+              <div className="trace-value">{doc.uploaded_at}</div>
+            </div>
+            <div className="trace-block">
+              <div className="trace-label">Status</div>
+              <div className="trace-value"><Badge color="var(--accent)">{doc.status}</Badge></div>
+            </div>
+            <div className="trace-block">
+              <div className="trace-label">Field Provenance</div>
+              <div style={{ marginTop:8 }}>
+                {allFields.map(e => (
+                  <div key={e.elem_id} className="provenance-row">
+                    <span style={{ color:'var(--muted)', fontFamily:'var(--mono)', fontSize:11, minWidth:200 }}>{e.field}</span>
+                    <Badge color="var(--purple)">{sourceLabel(e.source)}</Badge>
+                    <span style={{ color:'var(--muted)', fontSize:11 }}>{Math.round(e.confidence*100)}% conf</span>
+                    {e.edited && <Badge color="var(--cyan)">Edited {e.edited_at?.slice(0,10)}</Badge>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── PackageSummary ─────────────────────────────────────────────────────────────
+function PackageSummary({ docs, pkgPct, packageData }) {
+  const color = pkgPct >= 80 ? 'var(--green)' : pkgPct >= 50 ? 'var(--amber)' : 'var(--red)';
+  const matrix = packageData?.output_template_matrix || [];
+  const [incompleteOnly, setIncompleteOnly] = useState(false);
+  const shown = incompleteOnly ? matrix.filter(m => (m.completeness_pct || 0) < 100) : matrix;
+  return (
+    <div className="pkg-summary">
+      <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+        <Layers size={16} color="var(--accent)" />
+        <span style={{ fontWeight:600, fontSize:13 }}>Package Completeness</span>
+        <span style={{ fontSize:12, color:'var(--muted)', marginLeft:'auto' }}>{docs.length} document{docs.length!==1?'s':''}</span>
+      </div>
+      <div style={{ display:'flex', alignItems:'center', gap:16, marginTop:10 }}>
+        <ProgressBar value={pkgPct} color={color} height={10} />
+        <span style={{ fontFamily:'var(--mono)', fontSize:16, fontWeight:600, color, minWidth:50, textAlign:'right' }}>{pkgPct}%</span>
+      </div>
+      {matrix.length > 0 && (
+        <div style={{ marginTop: 10, display:'grid', gap:6 }}>
+          <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color:'var(--muted)' }}>
+            <input type="checkbox" checked={incompleteOnly} onChange={e => setIncompleteOnly(e.target.checked)} />
+            Show only incomplete rows
+          </label>
+          {shown.slice(0, 8).map((m, i) => (
+            <div key={`${m.template_id || m.filename}-${i}`} style={{ border:'1px solid var(--border)', borderRadius:6, padding:'6px 8px' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
+                <span style={{ fontSize:11, color:'var(--text)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                  {m.filename}
+                </span>
+                <Badge color={m.completeness_pct >= 80 ? 'var(--green)' : m.completeness_pct >= 50 ? 'var(--amber)' : 'var(--red)'}>
+                  {Math.round(m.completeness_pct)}%
+                </Badge>
+              </div>
+              <div style={{ marginTop:4, fontSize:10, color:'var(--muted)' }}>
+                {m.required_present}/{m.required_total} fields · missing {(m.missing_fields || []).length}
+              </div>
+              <div style={{ marginTop:3, fontSize:10, color:'var(--muted)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                Matched: {m.matched_doc_filename || 'none'}
+              </div>
+              <div style={{ marginTop:2, fontSize:10, color:'var(--muted)' }}>
+                Updated: {m.matched_doc_uploaded_at ? new Date(m.matched_doc_uploaded_at).toLocaleString() : '—'}
+              </div>
+            </div>
+          ))}
+          {shown.length === 0 && (
+            <div style={{ fontSize:11, color:'var(--muted)' }}>No incomplete rows.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── AuditPanel ────────────────────────────────────────────────────────────────
+function AuditPanel() {
+  const [events, setEvents] = useState([]);
+  const [open, setOpen] = useState(false);
+  const load = async () => {
+    const r = await api.get('/api/audit?limit=50');
+    setEvents(r.data.events);
+  };
+  useEffect(() => { if(open) load(); }, [open]);
+  const icons = { document_uploaded:<Upload size={12}/>, field_edited:<Edit3 size={12}/>, suggestion_actioned:<Sparkles size={12}/>, output_generated:<Download size={12}/>, upload_dedup:<RefreshCw size={12}/>, sample_loaded:<Database size={12}/> };
+  return (
+    <div className="audit-panel">
+      <button className="audit-toggle" onClick={() => { setOpen(!open); if(!open) load(); }}>
+        <Activity size={14} /> Audit Log <ChevronRight size={14} style={{ transform: open?'rotate(90deg)':'none', transition:'.2s' }} />
+      </button>
+      {open && (
+        <div className="audit-list">
+          {events.length === 0 && <div style={{ color:'var(--muted)', padding:'12px', fontSize:12 }}>No events yet.</div>}
+          {events.map((e,i) => (
+            <div key={i} className="audit-row">
+              <span style={{ color:'var(--accent)', marginRight:4 }}>{icons[e.event]||<Clock size={12}/>}</span>
+              <span style={{ fontFamily:'var(--mono)', fontSize:10, color:'var(--muted)', minWidth:160 }}>{e.ts?.slice(0,19).replace('T',' ')}</span>
+              <span style={{ fontFamily:'var(--mono)', fontSize:11, color:'var(--text)', fontWeight:500 }}>{e.event}</span>
+              {e.doc_id && <span style={{ fontSize:10, color:'var(--muted)', marginLeft:8 }}>…{e.doc_id.slice(-8)}</span>}
+              {e.field && <span style={{ fontSize:10, color:'var(--purple)', marginLeft:8 }}>{e.field}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── HealthBadge ───────────────────────────────────────────────────────────────
+function HealthBadge() {
+  const [h, setH] = useState(null);
+  useEffect(() => {
+    api.get('/api/health').then(r => setH(r.data)).catch(()=>{});
+  }, []);
+  if (!h) return null;
+  return (
+    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+      <Badge color={h.groq_available?'var(--green)':'var(--amber)'}>
+        {h.groq_available ? '⚡ Groq' : '🔧 Heuristic'}
+      </Badge>
+      {h.pdf_available && <Badge color="var(--cyan)">PDF</Badge>}
+      {h.docx_available && <Badge color="var(--cyan)">DOCX</Badge>}
+    </div>
+  );
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
+export default function App() {
+  const [docs, setDocs] = useState([]);
+  const [pkgPct, setPkgPct] = useState(0);
+  const [pkgData, setPkgData] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
+  const [uploadLoading, setUploadLoading] = useState(false);
+  const [sampleLoading, setSampleLoading] = useState(false);
+
+  const loadDocs = useCallback(async () => {
+    const r = await api.get('/api/documents');
+    const ordered = (r.data.documents || []).slice().sort((a,b) => {
+      const ta = Date.parse(a.uploaded_at || '') || 0;
+      const tb = Date.parse(b.uploaded_at || '') || 0;
+      return tb - ta;
+    });
+    setDocs(ordered);
+    setPkgPct(r.data.package_completeness_pct || 0);
+    setPkgData(r.data.package || null);
+    return ordered;
+  }, []);
+
+  useEffect(() => { loadDocs(); }, [loadDocs]);
+
+  useEffect(() => {
+    if (!selectedId && docs.length > 0) {
+      setSelectedId(docs[0].doc_id);
+    }
+  }, [docs, selectedId]);
+
+  const loadSample = async () => {
+    setSampleLoading(true);
+    const r = await api.post('/api/demo/load-sample');
+    const ordered = await loadDocs();
+    setSelectedId(r.data.doc_id || ordered?.[0]?.doc_id || null);
+    setSampleLoading(false);
+  };
+
+  const handleUploaded = async () => {
+    const ordered = await loadDocs();
+    if (ordered?.length) setSelectedId(ordered[0].doc_id);
+  };
+
+  return (
+    <div className="app">
+      {/* Sidebar */}
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <div className="logo-mark">M</div>
+            <div>
+              <div style={{ fontWeight:700, fontSize:15, letterSpacing:-.3 }}>MedDoc Intake</div>
+              <div style={{ fontSize:10, color:'var(--muted)', letterSpacing:.5, textTransform:'uppercase' }}>POC · v0.1</div>
+            </div>
+          </div>
+          <HealthBadge />
+        </div>
+
+        <UploadZone onUploaded={handleUploaded} loading={uploadLoading} setLoading={setUploadLoading} />
+
+        <button className="btn-sample" onClick={loadSample} disabled={sampleLoading}>
+          {sampleLoading ? <><RefreshCw size={13} className="spin"/> Loading…</> : <><Database size={13}/> Load Sample CEP</>}
+        </button>
+
+        {docs.length > 0 && <PackageSummary docs={docs} pkgPct={pkgPct} packageData={pkgData} />}
+
+        <div className="doc-list">
+          {docs.length === 0 && (
+            <div style={{ color:'var(--muted)', fontSize:12, padding:'24px 0', textAlign:'center' }}>
+              No documents yet.<br/>Upload a file or load the sample.
+            </div>
+          )}
+          {docs.map(doc => (
+            <DocCard key={doc.doc_id} doc={doc}
+              selected={doc.doc_id === selectedId}
+              onClick={() => setSelectedId(doc.doc_id)} />
+          ))}
+        </div>
+
+        <AuditPanel />
+      </aside>
+
+      {/* Main */}
+      <main className="main">
+        {selectedId ? (
+          <DocDetail docId={selectedId} onUpdate={loadDocs} />
+        ) : (
+          <div className="welcome">
+            <div className="welcome-inner">
+              <FileText size={48} strokeWidth={1} color="var(--border2)" />
+              <h2>Document Intake & Review</h2>
+              <p>Upload a regulatory document or load the sample Clinical Evaluation Protocol to get started.</p>
+              <div style={{ display:'flex', gap:8, justifyContent:'center', marginTop:8 }}>
+                <Badge color="var(--accent)">Extract fields</Badge>
+                <Badge color="var(--amber)">Review suggestions</Badge>
+                <Badge color="var(--green)">Generate output</Badge>
+                <Badge color="var(--purple)">Full traceability</Badge>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+
+============================================================
+FILE: main.py
+============================================================
+def main():
+    print("Hello from accelidea-siva!")
+
+
+if __name__ == "__main__":
+    main()
+
+
+============================================================
+FILE: pyproject.toml
+============================================================
+[project]
+name = "accelidea-siva"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+

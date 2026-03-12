@@ -17,13 +17,21 @@ from typing import Optional, Dict, List, Set
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
 from meddoc.schemas import (
     DOC_TYPES as SCHEMA_DOC_TYPES,
     SECTION_KEYWORDS as SCHEMA_SECTION_KEYWORDS,
     SECTION_FIELD_HINTS as SCHEMA_SECTION_FIELD_HINTS,
 )
 from meddoc.pipeline import section_aware_extract_rag
+from meddoc.routes.system import router as system_router
+from meddoc.routes.meta import router as meta_router
+from meddoc.storage import (
+    UPLOADS, OUTPUTS, SAMPLE_DOCS, OUTPUTDOCS,
+    AUDIT, load_db, save_db, audit,
+)
+from meddoc.models import (
+    FieldEdit, SuggestionAction, ReprocessRequest, TemplateIngestRequest,
+)
 
 try:
     import pdfplumber
@@ -42,49 +50,6 @@ try:
     GROQ_OK = True
 except ImportError:
     GROQ_OK = False
-
-# ── paths ─────────────────────────────────────────────────────────────────────
-BASE    = Path(__file__).parent
-UPLOADS = BASE / "uploads";  UPLOADS.mkdir(exist_ok=True)
-OUTPUTS = BASE / "outputs";  OUTPUTS.mkdir(exist_ok=True)
-LOGS    = BASE / "logs";     LOGS.mkdir(exist_ok=True)
-ONTOLOGY_DIR = BASE / "ontology_data"; ONTOLOGY_DIR.mkdir(exist_ok=True)
-DB_PATH = ONTOLOGY_DIR / "ontology_db.json"
-AUDIT   = LOGS / "audit.jsonl"
-SAMPLE_DOCS = BASE / "sample_docs"; SAMPLE_DOCS.mkdir(exist_ok=True)
-OUTPUTDOCS = BASE / "outputdocs"
-
-# ── ontology DB ───────────────────────────────────────────────────────────────
-EMPTY_DB = {
-    "version": 1,
-    "documents": {},
-    "elements": {},
-    "relationships": [],
-    "schema_registry": {},
-    "templates": {}
-}
-
-def ensure_db_shape(db: dict) -> dict:
-    db.setdefault("version", 1)
-    db.setdefault("documents", {})
-    db.setdefault("elements", {})
-    db.setdefault("relationships", [])
-    db.setdefault("schema_registry", {})
-    db.setdefault("templates", {})
-    return db
-
-def load_db() -> dict:
-    if DB_PATH.exists():
-        return ensure_db_shape(json.loads(DB_PATH.read_text()))
-    return ensure_db_shape(json.loads(json.dumps(EMPTY_DB)))
-
-def save_db(db: dict):
-    DB_PATH.write_text(json.dumps(db, indent=2, default=str))
-
-def audit(event: str, payload: dict):
-    entry = {"ts": datetime.datetime.utcnow().isoformat(), "event": event, **payload}
-    with open(AUDIT, "a") as f:
-        f.write(json.dumps(entry) + "\n")
 
 # ── document type schemas ─────────────────────────────────────────────────────
 DOC_TYPES = {
@@ -1004,15 +969,8 @@ def write_output_docx(doc_id: str, doc: dict, elements: Dict[str, dict], schema:
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 app = FastAPI(title="MedDoc Intake POC", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-@app.get("/api/health")
-def health():
-    return {
-        "status": "ok",
-        "groq_available": bool(get_groq()),
-        "pdf_available": PDF_OK,
-        "docx_available": DOCX_OK
-    }
+app.include_router(system_router)
+app.include_router(meta_router)
 
 @app.post("/api/documents/upload")
 async def upload_document(file: UploadFile = File(...)):
@@ -1082,11 +1040,6 @@ def list_documents():
         "package": pkg
     }
 
-@app.get("/api/package/completeness")
-def package_completeness():
-    db = load_db()
-    return package_completeness_summary(db)
-
 @app.get("/api/documents/{doc_id}")
 def get_document(doc_id: str):
     db = load_db()
@@ -1097,10 +1050,6 @@ def get_document(doc_id: str):
     elem_ids = {e["elem_id"] for e in elements}
     related = [r for r in db["relationships"] if r.get("type") == "field_related" and r.get("from") in elem_ids and r.get("to") in elem_ids]
     return {**doc,"elements":elements, "field_relationships": related}
-
-class FieldEdit(BaseModel):
-    elem_id: str
-    new_value: str
 
 @app.patch("/api/documents/{doc_id}/fields")
 def edit_field(doc_id: str, body: FieldEdit):
@@ -1119,14 +1068,6 @@ def edit_field(doc_id: str, body: FieldEdit):
     save_db(db)
     audit("field_edited",{"doc_id":doc_id,"field":elem["field"],"old":old,"new":body.new_value})
     return {"ok":True,"completeness":doc["completeness"]}
-
-class SuggestionAction(BaseModel):
-    action: str
-    edited_value: Optional[str] = None
-
-class ReprocessRequest(BaseModel):
-    preserve_manual_edits: bool = True
-    force_doc_type: Optional[str] = None
 
 @app.post("/api/documents/{doc_id}/suggestions/{suggestion_id}")
 def handle_suggestion(doc_id: str, suggestion_id: str, body: SuggestionAction):
@@ -1301,43 +1242,6 @@ def download_output_docx(doc_id: str):
         filename=f"output_{doc_id[:8]}.docx",
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
-
-@app.get("/api/audit")
-def get_audit(limit: int=100):
-    if not AUDIT.exists():
-        return {"events":[]}
-    lines = AUDIT.read_text().strip().split("\n")
-    events=[]
-    for line in lines[-limit:]:
-        try: events.append(json.loads(line))
-        except: pass
-    return {"events":list(reversed(events))}
-
-@app.get("/api/schema")
-def get_schema():
-    db = load_db()
-    return {
-        "schema_registry":db["schema_registry"],
-        "doc_types":list(DOC_TYPES.keys()),
-        "template_count": len(db.get("templates", {})),
-        "effective_doc_schemas": {dt: effective_schema(db, dt) for dt in DOC_TYPES.keys()},
-        "section_taxonomy": SECTION_KEYWORDS
-    }
-
-class TemplateIngestRequest(BaseModel):
-    filenames: Optional[List[str]] = None
-
-@app.get("/api/templates")
-def list_templates():
-    db = load_db()
-    templates = sorted(db.get("templates", {}).values(), key=lambda x: x.get("ingested_at",""), reverse=True)
-    return {"templates": templates, "count": len(templates)}
-
-@app.post("/api/templates/ingest")
-def ingest_templates(body: Optional[TemplateIngestRequest] = None):
-    filenames = body.filenames if body else None
-    result = ingest_templates_into_ontology(filenames=filenames)
-    return result
 
 # ── Sample data loader ────────────────────────────────────────────────────────
 SAMPLE_CEP_TEXT = """

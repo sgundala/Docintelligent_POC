@@ -1,0 +1,26 @@
+DESIGN HISTORY FILE ENTRY
+Document Title: DVT Test Plan - Verification and Validation Entry
+Document Number: DVT-DHF-001
+Version: 1.0
+Date: 2026-03-08
+Author: QA Engineering Lead
+Device Name: Deep Vein Thrombosis Screening Assistant
+
+1. DESIGN INPUT
+Design Input: The system shall detect DVT risk indicators from ultrasound-derived parameters with sensitivity >= 90% and specificity >= 85%.
+
+2. DESIGN OUTPUT
+Design Output: Implemented risk scoring algorithm, validated feature extraction module, and clinician-facing report output with risk stratification categories.
+
+3. DESIGN VERIFICATION
+Design Verification: Unit, integration, and system verification completed against requirements matrix. All critical verification test cases passed.
+
+4. DESIGN VALIDATION
+Design Validation: Clinical simulation and retrospective dataset validation confirmed intended use performance for target patient population.
+
+5. DESIGN REVIEW RECORD
+Design Review Record: Cross-functional design review conducted on 2026-03-08 with QA, Regulatory, Clinical, and Software teams; action items closed.
+
+6. TRACEABILITY NOTES
+Change Control Ref: CCR-2026-019
+Risk Ref: RMF-DVT-2026-004
