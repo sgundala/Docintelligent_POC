@@ -6,7 +6,7 @@ Date: 2026-03-08
 Author: Priya Raman
 Reviewer: John Mercer
 Device Name: NeuroPulse Wearable Monitor
-Manufacturer: Accelidea Med Systems
+Manufacturer: Siva Med Systems
 Risk Management Standard: ISO 14971:2019
 
 1. SCOPE

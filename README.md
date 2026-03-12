@@ -40,7 +40,7 @@ A Docker-first proof of concept for medical/regulatory document workflows:
 
 ### Start
 ```bash
-cd /Users/sivadatum/Documents/Playground/Accelidea_Siva
+cd ~/Docintelligent_POC
 cp .env.example .env
 # edit .env and set GROQ_API_KEY=... (optional but recommended)
 docker compose up --build -d
@@ -301,7 +301,7 @@ docker compose logs frontend --tail=120
 ## 14. Project Structure
 
 ```text
-Accelidea_Siva/
+Docintelligent_POC/
 ├── backend/
 │   ├── app.py
 │   ├── requirements.txt
@@ -336,7 +336,7 @@ Accelidea_Siva/
 Run from project root:
 
 ```bash
-cd /Users/sivadatum/Documents/Playground/Accelidea_Siva
+cd ~/Docintelligent_POC
 git status
 git add .
 git commit -m "Finalize MedDoc intake POC: modular extraction, completeness matrix, UI fixes, README"
